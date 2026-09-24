@@ -1,0 +1,9 @@
+{
+  "name": "godseye-feed-server",
+  "version": "6.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node --env-file-if-exists=.env server.mjs", "test": "node --test *.test.mjs" },
+  "dependencies": { "ws": "8.18.3" }
+}

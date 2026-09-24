@@ -1,0 +1,48 @@
+const Feeds = (() => {
+  const esc=Utils.escapeHTML,config=window.GODS_EYE_FEEDS;
+  let topic='world',newsCache=new Map(),newsController=null,hls=null,imageTimer=null,playerVersion=0,cameras=[];
+  const queries={world:'(election OR summit OR crisis OR earthquake OR conflict) sourcelang:english',security:'(conflict OR defense OR diplomacy OR ceasefire) sourcelang:english',weather:'(earthquake OR wildfire OR hurricane OR flooding) sourcelang:english'};
+  function init(){
+    try{const saved=localStorage.getItem('godseye_feed_server');if(saved!==null)config.apiBase=validateServer(saved);const stored=JSON.parse(localStorage.getItem('godseye_cameras')||'[]');cameras=[...(config.cameras||[]),...(Array.isArray(stored)?stored:[])].filter(c=>Utils.safeURL(c.url)&&['youtube','video','image','embed'].includes(c.type)).slice(0,30);}catch{}
+    setInterval(()=>{if(UI.panel==='news'&&!document.hidden)loadNews();},config.newsRefreshMs||300000);
+  }
+  function validateServer(value){if(!value)return '';const u=new URL(value);if(u.protocol!=='https:'&&!(u.protocol==='http:'&&['localhost','127.0.0.1'].includes(u.hostname)))throw Error('Use an HTTPS server URL.');if(u.username||u.password||u.search||u.hash)throw Error('Enter the public server address without credentials or query parameters.');return u.href.replace(/\/$/,'');}
+  async function saveConnection(event){event.preventDefault();const msg=document.getElementById('connection-message');try{const base=validateServer(new FormData(event.target).get('apiBase').trim());localStorage.setItem('godseye_feed_server',base);config.apiBase=base;msg.textContent='Saved. Reconnecting feeds…';await App.refreshFeeds();msg.textContent='Settings saved. Feed status is shown in the explorer.';}catch(e){msg.textContent=e.message;}}
+  function setTopic(value){if(!queries[value])return;topic=value;document.querySelectorAll('[data-topic]').forEach(b=>b.classList.toggle('active',b.dataset.topic===value));loadNews();}
+  function newsTime(value){const m=String(value||'').match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);return m?new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`):null;}
+  async function loadNews(force=false){
+    const selectedTopic=topic,cached=newsCache.get(topic);if(!force&&cached&&Date.now()-cached.at<(config.newsRefreshMs||300000)){renderNews(cached.articles,cached.at);return;}
+    newsController?.abort();const controller=new AbortController();newsController=controller;const timeout=setTimeout(()=>controller.abort(),15000);
+    document.getElementById('news-status').textContent='Connecting to GDELT…';
+    try{
+      const url=config.apiBase?config.apiBase+'/api/news?topic='+topic:'https://api.gdeltproject.org/api/v2/doc/doc?'+new URLSearchParams({query:queries[topic],mode:'artlist',format:'json',maxrecords:'30',timespan:'24h',sort:'datedesc'});
+      const r=await fetch(url,{signal:controller.signal});if(!r.ok)throw Error('Provider returned HTTP '+r.status);const data=await r.json();
+      if(!Array.isArray(data.articles))throw Error('No article list returned');
+      if(topic!==selectedTopic||controller!==newsController)return;
+      const articles=data.articles.filter(a=>typeof a.title==='string'&&Utils.safeURL(a.url)).slice(0,30),at=Date.now();newsCache.set(topic,{articles,at});renderNews(articles,at);
+    }catch(e){if(controller!==newsController)return;document.getElementById('news-status').textContent='News feed unavailable · try again later';document.getElementById('news-list').innerHTML='<div class="empty-list"><strong>Could not retrieve current reports</strong>GDELT may be busy or blocked by your network. Your feed server can also relay this source.</div>';}finally{clearTimeout(timeout);}
+  }
+  function renderNews(articles,at){document.getElementById('news-status').textContent='GDELT · updated '+new Date(at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · last 24 hours';
+    document.getElementById('news-list').innerHTML=articles.length?articles.map(a=>{const time=newsTime(a.seendate);return `<a class="news-item" href="${esc(Utils.safeURL(a.url))}" target="_blank" rel="noopener noreferrer"><div class="news-meta"><span>${esc(a.domain||new URL(a.url).hostname)}</span><time>${time?'Indexed '+time.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'Recent report'}</time></div><h3>${esc(a.title)}</h3><div class="publisher-link">Read at publisher ↗</div></a>`;}).join(''):'<div class="empty-list">No matching reports returned for this period.</div>';
+  }
+  function showCameraForm(){document.getElementById('camera-form').hidden=false;document.querySelector('#camera-form [name=name]').focus();}
+  function renderCameras(){document.getElementById('camera-list').innerHTML=cameras.length?cameras.map((c,i)=>`<div class="camera-row"><button onclick="Feeds.playCamera(${i})">${esc(c.name)}<small style="display:block;color:#8098b8">${esc(c.type)} · click to open</small></button><button onclick="Feeds.removeCamera(${i})" aria-label="Remove ${esc(c.name)}">×</button></div>`).join(''):`<div class="camera-empty">${Icons.svg('camera',40)}<strong>Your window onto the world.</strong><p>Add a public webcam or a camera you own. Video and image feeds appear here when opened.</p><button class="primary-button" onclick="Feeds.showCameraForm()">Add your first camera</button><p style="font-size:10px;margin-top:14px"><a href="https://embed.windy.com/config/webcam" target="_blank" rel="noopener">Find a Windy webcam embed ↗</a></p></div>`;}
+  function youtubeURL(value){const u=new URL(value);let id;if(u.hostname==='youtu.be')id=u.pathname.slice(1);else if(['www.youtube.com','youtube.com','www.youtube-nocookie.com'].includes(u.hostname))id=u.searchParams.get('v')||u.pathname.match(/^\/(?:embed|live)\/([\w-]{11})/)?.[1];if(!/^[\w-]{11}$/.test(id||''))throw Error('Enter a YouTube watch, live, or embed URL with a video ID.');return 'https://www.youtube-nocookie.com/embed/'+id;}
+  function persistCameras(){localStorage.setItem('godseye_cameras',JSON.stringify(cameras));}
+  function addCamera(event){event.preventDefault();const data=new FormData(event.target),error=document.getElementById('camera-error');try{const name=String(data.get('name')).trim(),type=String(data.get('type')),url=Utils.safeURL(data.get('url'));if(!name||!url)throw Error('A name and valid HTTPS URL are required.');if(type==='youtube')youtubeURL(url);if(cameras.length>=30)throw Error('Remove a camera before adding another.');cameras.push({name:name.slice(0,80),type,url});persistCameras();event.target.reset();event.target.hidden=true;error.textContent='';renderCameras();playCamera(cameras.length-1);}catch(e){error.textContent=e.message;}}
+  function clearPlayer(){playerVersion++;hls?.destroy();hls=null;clearInterval(imageTimer);imageTimer=null;document.getElementById('camera-player').replaceChildren();}
+  function removeCamera(i){cameras.splice(i,1);persistCameras();clearPlayer();renderCameras();}
+  async function playCamera(i){const c=cameras[i];if(!c)return;clearPlayer();const version=playerVersion,container=document.getElementById('camera-player'),stage=document.createElement('div');stage.className='camera-stage';container.appendChild(stage);
+    const caption=document.createElement('div');caption.className='camera-caption';caption.textContent=c.name+' · operator-supplied '+(c.type==='image'?'image (refreshes every 60s)':'feed');const source=document.createElement('a');source.href=c.url;source.target='_blank';source.rel='noopener noreferrer';source.textContent='Open original source ↗';caption.appendChild(source);container.appendChild(caption);
+    if(c.type==='youtube'||c.type==='embed'){const iframe=document.createElement('iframe');iframe.title=c.name;iframe.src=c.type==='youtube'?youtubeURL(c.url):c.url;iframe.allow='fullscreen; picture-in-picture';iframe.setAttribute('sandbox','allow-scripts allow-same-origin allow-presentation');iframe.referrerPolicy='strict-origin-when-cross-origin';stage.appendChild(iframe);}
+    else if(c.type==='image'){const img=document.createElement('img');img.alt=c.name;img.src=c.url;img.onerror=()=>caption.firstChild.textContent='Image unavailable · open the original source';stage.appendChild(img);imageTimer=setInterval(()=>{if(UI.panel==='cameras'&&!document.hidden)img.src=c.url+(c.url.includes('?')?'&':'?')+'_refresh='+Date.now();},60000);}
+    else{const video=document.createElement('video');video.controls=true;video.playsInline=true;video.muted=true;stage.appendChild(video);video.onerror=()=>caption.firstChild.textContent='Video unavailable or blocked · open the original source';
+      if(/\.m3u8(?:\?|$)/i.test(c.url)&&!video.canPlayType('application/vnd.apple.mpegurl')){
+        try{await loadHls();if(version!==playerVersion)return;if(!Hls.isSupported())throw Error('HLS unsupported');hls=new Hls();hls.loadSource(c.url);hls.attachMedia(video);hls.on(Hls.Events.ERROR,(_,d)=>{if(d.fatal)caption.firstChild.textContent='Stream unavailable or blocked by its provider';});}catch{if(version===playerVersion)caption.firstChild.textContent='HLS unavailable · open the original source';}
+      }else video.src=c.url;
+    }
+  }
+  let hlsPromise;
+  function loadHls(){if(window.Hls)return Promise.resolve();if(hlsPromise)return hlsPromise;hlsPromise=new Promise((resolve,reject)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js';s.onload=resolve;s.onerror=()=>{hlsPromise=null;reject(Error('Player unavailable'));};document.head.appendChild(s);});return hlsPromise;}
+  return {init,saveConnection,setTopic,loadNews,renderCameras,showCameraForm,addCamera,playCamera,removeCamera,validateServer,youtubeURL,newsTime};
+})();

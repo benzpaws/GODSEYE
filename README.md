@@ -1,6 +1,12 @@
-# GODS EYE // Worldview Operations Center
+# GODS EYE // World Observatory
 
-A browser-based 3D globe and proximity radar built with vanilla JavaScript, Three.js and satellite.js. It displays public orbital elements from CelesTrak and aircraft position reports from OpenSky when those sources are reachable. The repository is a prototype being developed into a dependable public-data viewer.
+A browser-based 3D Earth observatory built with vanilla JavaScript, Three.js and satellite.js. It displays calculated satellite positions, reported aircraft positions, optional AIS vessel observations, public news headlines and operator-supplied camera feeds. The interface is designed as a cinematic spy simulator while labeling calculated, reported and unavailable data honestly.
+
+## Current build
+
+The main page is a clean three-panel observatory with animated target icons, smooth camera following, a solid Earth occlusion test, Natural/Recon/Night Vision views, aircraft and vessel layers, a news briefing panel and a camera-feed panel. Select an object from the list or click its icon on the globe. Objects behind the Earth are hidden from both the marker layer and the hit target.
+
+The optional `server/` folder is the production path for provider-backed feeds. See [docs/FEED-SETUP.md](docs/FEED-SETUP.md) before connecting commercial data sources.
 
 ## What the positions mean
 

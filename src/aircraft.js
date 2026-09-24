@@ -11,7 +11,9 @@ const Aircraft = (() => {
   let airLabels     = [];   // floating callsign labels
   let activeBracket = null; // bracket on selected aircraft
 
-  const routeCache  = {};
+  const routeCache = {};
+  let status = "connecting", error = "", lastUpdate = null;
+  let pending = null;
 
   // ── Label zoom threshold ─────────────────────────────────
   const LABEL_ZOOM_THRESHOLD = 2.3;
@@ -46,12 +48,17 @@ const Aircraft = (() => {
   }
 
   // ── OpenSky Fetch ────────────────────────────────────────
-  async function fetch_data() {
+  function fetch_data() {
+    if(pending)return pending;
+    pending=fetchSnapshot().finally(()=>{pending=null;});return pending;
+  }
+  async function fetchSnapshot() {
     try {
-      // Use CORS proxy — direct OpenSky fetch fails on GitHub Pages
-      const url = CONFIG.proxy + encodeURIComponent(CONFIG.opensky);
+      status='connecting';
+      const base = typeof window !== 'undefined' ? (window.GODS_EYE_FEEDS?.apiBase || '').replace(/\/$/,'') : '';
+      const url = base ? base + '/api/aircraft' : CONFIG.opensky;
       const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
-      if (!res.ok) throw new Error('OpenSky ' + res.status);
+      if (!res.ok) throw new Error(res.status===429 ? 'Provider rate limit reached' : 'Flight provider HTTP ' + res.status);
       const data = await res.json();
       if (!data || !Array.isArray(data.states)) throw new Error('Invalid OpenSky response');
       const nowSeconds = Date.now() / 1000;
@@ -74,11 +81,11 @@ const Aircraft = (() => {
       next.forEach(ac => {
         if (isMilitary(ac)) { ac.military = true; ac.classification = 'callsign hint'; }
       });
-      aircraft = next;
+      aircraft=next;status=next.length?'online':'empty';error='';lastUpdate=Date.now();
       return true;
     } catch (e) {
       // Never leave an old snapshot on screen as if it were live.
-      aircraft = [];
+      aircraft=[];status='offline';error=e.message || 'Flight feed unavailable';
       return false;
     }
   }
@@ -186,167 +193,31 @@ const Aircraft = (() => {
     } catch (e) { return null; }
   }
 
-  // ── Plane dot texture — small triangle/arrowhead ─────────
-  const acDotCache = {};
-  function makeAcDot(color, sz = 24) {
-    const key = color + sz;
-    if (acDotCache[key]) return acDotCache[key];
-    const cv  = document.createElement('canvas');
-    cv.width  = cv.height = sz;
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, sz, sz);
-    const cx = sz / 2, cy = sz / 2;
-    // Simple filled triangle pointing up — reads as plane at small scale
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(cx, 2);
-    ctx.lineTo(sz - 2, sz - 2);
-    ctx.lineTo(cx, sz - 6);
-    ctx.lineTo(2, sz - 2);
-    ctx.closePath();
-    ctx.fill();
-    const tex = new THREE.CanvasTexture(cv);
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    acDotCache[key] = tex;
-    return tex;
-  }
-
-  function makeAcLabel(cs, lColor) {
-    const cv  = document.createElement('canvas');
-    const ctx = cv.getContext('2d');
-    const fs  = 9;
-    ctx.font  = `${fs}px "Share Tech Mono", monospace`;
-    const tw  = ctx.measureText(cs).width;
-    const pad = 3;
-    cv.width  = Math.ceil(tw + pad * 2);
-    cv.height = fs + pad * 2;
-    ctx.font  = `${fs}px "Share Tech Mono", monospace`;
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.fillStyle = lColor;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(cs, pad, cv.height / 2 + 1);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearFilter;
-    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-    const spr = new THREE.Sprite(mat);
-    const h = 0.012;
-    spr.scale.set((cv.width / cv.height) * h, h, 1);
-    return spr;
-  }
-
-  // ── Build Meshes ─────────────────────────────────────────
-  function buildMeshes(godMode) {
-    airMeshes.forEach(mesh => mesh.material.dispose());
-    airLabels.forEach(label => {
-      label.material.map.dispose();
-      label.material.dispose();
-    });
-    Globe.airGroup.clear();
-    Globe.labelGroup.children
-      .filter(c => c.userData.airLabel)
-      .forEach(c => Globe.labelGroup.remove(c));
-    Globe.bracketGroup.children
-      .filter(c => c.userData.airBracket)
-      .forEach(c => Globe.bracketGroup.remove(c));
-    activeBracket = null;
-    airMeshes = [];
-    airLabels = [];
-
-    aircraft.forEach((ac, idx) => {
-      const lColor = godMode ? '#00ffcc' : ac.military ? '#ff9900' : '#00f5ff';
-      const tex    = makeAcDot(lColor, 24);
-      const mat    = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, opacity: 0.9 });
-      const sprite = new THREE.Sprite(mat);
-      sprite.scale.setScalar(0.010);
-      sprite.userData = { idx, type: 'air', obj: ac };
-      Globe.airGroup.add(sprite);
-      airMeshes.push(sprite);
-
-      const cs    = (ac.callsign || ac.icao24 || 'UNK').substring(0, 8).trim();
-      const alt   = ac.baro_altitude || ac.geo_altitude;
-      const fl    = alt ? ' FL' + Math.round(alt * 3.28084 / 100) : '';
-      const label = makeAcLabel(cs + fl, lColor);
-      label.visible = false;
-      label.userData = { idx, airLabel: true };
-      Globe.labelGroup.add(label);
-      airLabels.push(label);
+  function buildMeshes() {
+    const previous=new Map(airMeshes.map(m=>[m.userData.obj.icao24,m.position.clone()]));
+    Globe.airGroup.clear();airMeshes=[];airLabels=[];
+    aircraft.forEach((ac,idx)=>{
+      const anchor=new THREE.Object3D();anchor.userData={idx,type:'air',obj:ac};
+      const r=1+(Math.max(0,ac.geo_altitude??ac.baro_altitude??0)/1000)/6371+.001;
+      anchor.userData.target=Utils.ll2v3(ac.lat,ac.lon,r);
+      anchor.position.copy(previous.get(ac.icao24)||anchor.userData.target);
+      anchor.userData.start=anchor.position.clone();anchor.userData.started=performance.now();
+      Globe.airGroup.add(anchor);airMeshes.push(anchor);
     });
   }
-
-  // ── Place ─────────────────────────────────────────────────
-  function place() {
-    const showLabels   = Globe.zoom <= LABEL_ZOOM_THRESHOLD;
-    const satIsolating = typeof Satellites !== 'undefined' && Satellites.isolateMode;
-    const trackedAirIdx = (typeof UI !== 'undefined' && UI.selectedType === 'air' && UI.selectedIdx !== null)
-      ? UI.selectedIdx : null;
-
-    aircraft.forEach((ac, idx) => {
-      if (ac.lat == null || ac.lon == null) return;
-      const alt = (ac.geo_altitude || ac.baro_altitude || 10000) / 1000;
-      const r   = 1 + (alt / 6371) * 1.4 + 0.005;
-      const pos = Utils.ll2v3(ac.lat, ac.lon, r);
-      if (airMeshes[idx]) airMeshes[idx].position.copy(pos);
-      if (airLabels[idx]) {
-        airLabels[idx].position.copy(Utils.ll2v3(ac.lat, ac.lon, r + 0.035));
-        let labelVis;
-        if (satIsolating) {
-          labelVis = false;                             // sat tracked — hide all planes
-        } else if (trackedAirIdx !== null) {
-          labelVis = (idx === trackedAirIdx);           // plane tracked — only show that label
-        } else {
-          labelVis = showLabels;                        // normal — show if zoomed in
-        }
-        airLabels[idx].visible = labelVis;
-      }
-      if (activeBracket && activeBracket.userData.idx === idx) {
-        activeBracket.position.copy(pos);
-      }
+  function place(){animate();}
+  function animate(){
+    airMeshes.forEach(m=>{
+      // A short visual transition between received observations, not extrapolation.
+      const t=Math.min(1,(performance.now()-m.userData.started)/1400);
+      m.position.lerpVectors(m.userData.start,m.userData.target,t*t*(3-2*t));
+      m.visible=freshPosition(m.userData.obj.time_position);
     });
   }
-
-  // ── Recolor ───────────────────────────────────────────────
-  function recolor(godMode) {
-    // Emoji sprites keep their appearance — just adjust opacity in god mode
-    aircraft.forEach((ac, idx) => {
-      if (!airMeshes[idx]) return;
-      airMeshes[idx].material.opacity = godMode ? 0.7 : 0.95;
-      airMeshes[idx].material.needsUpdate = true;
-    });
-  }
-
-  // ── Bracket on selected aircraft ─────────────────────────
-  function showBracket(idx, godMode) {
-    // Remove old air bracket
-    Globe.bracketGroup.children
-      .filter(c => c.userData.airBracket)
-      .forEach(c => Globe.bracketGroup.remove(c));
-    activeBracket = null;
-    if (idx === null || !airMeshes[idx]) return;
-
-    const color   = godMode ? 0x00ffcc : aircraft[idx]?.military ? 0xff9900 : 0x00f5ff;
-    const bracket = Globe.makeBracket(0.045, color);
-    bracket.position.copy(airMeshes[idx].position);
-    bracket.userData = { idx, airBracket: true };
-    Globe.bracketGroup.add(bracket);
-    activeBracket = bracket;
-    let t = 0;
-    const pulse = () => {
-      if (!activeBracket || activeBracket.userData.idx !== idx) return;
-      t += 0.04;
-      activeBracket.scale.setScalar(1 + Math.sin(t) * 0.07);
-      requestAnimationFrame(pulse);
-    };
-    pulse();
-  }
-
+  function recolor(){} function showBracket(){}
   return {
-    get list()    { return aircraft; },
-    get meshes()  { return airMeshes; },
-    get labels()  { return airLabels; },
-    fetch: fetch_data, fetchMilitary, fetchRoute, freshPosition,
-    buildMeshes, place, recolor, showBracket, isMilitary,
+    get list(){return aircraft;},get meshes(){return airMeshes;},get labels(){return airLabels;},
+    get status(){return status;},get error(){return error;},get lastUpdate(){return lastUpdate;},
+    fetch:fetch_data,fetchMilitary,fetchRoute,freshPosition,buildMeshes,place,animate,recolor,showBracket,isMilitary,
   };
 })();

@@ -1,872 +1,101 @@
-// ═══════════════════════════════════════════════════════════
-//  GODS EYE — UI MODULE v5.2
-//  Palantir-style dossier panel, DATA LAYERS panel,
-//  Unified search + filters, bracket reticle integration
-// ═══════════════════════════════════════════════════════════
-
 const UI = (() => {
-  let selectedIdx  = null, selectedType = 'sat';
-  let godMode      = false;
-  let layerSat     = true, layerAir = true;
-  let shaderMode   = 'normal';
-  let radarOpen    = false;
-
-  // ── Active search/filter state ────────────────────────────
-  let searchQuery  = '';
-  let filterType   = 'all';   // 'all' | 'sat' | 'air' | 'mil'
-  let filterCountry= '';
-
-  // ── Targeting canvas ──────────────────────────────────────
-  let tcanvas, tctx, targetAnimFrame = null;
-
-  function initTargeting() {
-    tcanvas = document.getElementById('targets-canvas');
-    resizeTargets();
-    window.addEventListener('resize', resizeTargets);
+  let selection=null,index=null,search='',filter='all',view='natural',panel='detail';
+  const layers={sat:true,air:true,ship:true};
+  const esc=Utils.escapeHTML;
+  const modules=()=>({sat:Satellites,air:Aircraft,ship:Vessels});
+  const identity=(type,obj)=>String(type==='sat'?obj.id:type==='air'?obj.icao24:obj.mmsi);
+  const nameOf=(type,obj)=>type==='sat'?obj.name:type==='air'?(obj.callsign||obj.icao24):obj.name;
+  function current(){return selection&&index!==null?modules()[selection.type].list[index]:null;}
+  function mesh(){return selection&&index!==null?modules()[selection.type].meshes[index]:null;}
+  function selectedName(){const o=current();return o?nameOf(selection.type,o):'';}
+  function init(){emptyDetail();buildDataLayers();buildList();
+    window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('dialog[open]'))deselect();});
   }
-  function resizeTargets() {
-    if (!tcanvas) return;
-    tcanvas.width  = Globe.wrap.clientWidth;
-    tcanvas.height = Globe.wrap.clientHeight;
+  function openPanel(which){panel=which;for(const p of ['detail','news','cameras'])document.getElementById(p+'-panel').hidden=p!==which;
+    document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.id==='nav-'+(which==='detail'?'globe':which)));
+    document.body.classList.toggle('inspector-open',which!=='detail'||!!selection);
+    if(which==='news')Feeds.loadNews();if(which==='cameras')Feeds.renderCameras();
   }
-
-  // ── GOD VIEW targeting animation ─────────────────────────
-  function drawTargets() {
-    if (targetAnimFrame) cancelAnimationFrame(targetAnimFrame);
-    resizeTargets();
-    tctx = tcanvas.getContext('2d');
-    let t = 0;
-    function loop() {
-      if (!godMode) { clearTargets(); return; }
-      targetAnimFrame = requestAnimationFrame(loop);
-      t += 0.5;
-      tctx.clearRect(0, 0, tcanvas.width, tcanvas.height);
-
-      if (selectedType === 'sat' && selectedIdx !== null && Satellites.meshes[selectedIdx]) {
-        const pos    = Satellites.meshes[selectedIdx].position.clone();
-        const screen = Utils.worldToScreen(pos, Globe.rotX, Globe.rotY, Globe.camera, tcanvas.width, tcanvas.height);
-        if (screen) _drawTargetReticle(screen, t, Satellites.list[selectedIdx]?.name || '');
-      }
-
-      // Ambient rings
-      const numRings = Math.min(6, Satellites.list.length);
-      for (let i = 0; i < numRings; i++) {
-        const idx = Math.floor((i / numRings) * Satellites.list.length);
-        if (!Satellites.meshes[idx]) continue;
-        const pos = Satellites.meshes[idx].position.clone();
-        const sc  = Utils.worldToScreen(pos, Globe.rotX, Globe.rotY, Globe.camera, tcanvas.width, tcanvas.height);
-        if (!sc) continue;
-        const phase = t * 0.04 + i * 0.9;
-        const r = 10 + Math.sin(phase) * 4;
-        const alpha = 0.07 + Math.sin(phase) * 0.04;
-        tctx.strokeStyle = `rgba(0,255,${180 + i * 5},${alpha})`;
-        tctx.lineWidth = 0.5;
-        tctx.beginPath(); tctx.arc(sc.x, sc.y, r, 0, Math.PI * 2); tctx.stroke();
-      }
+  function openConnections(){const d=document.getElementById('connections-dialog');d.querySelector('[name=apiBase]').value=window.GODS_EYE_FEEDS.apiBase||'';d.showModal();}
+  function setView(next){view=next;Globe.canvas.classList.toggle('nvg',next==='nvg');if(next==='recon')Globe.enterGodView();else Globe.exitGodView();
+    for(const v of ['natural','recon','nvg'])document.getElementById('view-'+v).classList.toggle('active',v===next);
+    document.getElementById('map-mode').textContent={natural:'Natural color',recon:'Recon · public observations',nvg:'Night vision · visual effect'}[next];
+  }
+  function buildDataLayers(){
+    const items=[['sat','Satellites',Satellites.list.length,Satellites.list.length?'Orbital elements':'Unavailable'],['air','Aircraft',Aircraft.list.length,Aircraft.status==='online'?'Reported positions':Aircraft.status],['mil','Military*',Aircraft.list.filter(a=>a.military).length,'Callsign hints'],['ship','Vessels',Vessels.list.length,Vessels.status==='unconfigured'?'Connect AIS feed':Vessels.status]];
+    document.getElementById('data-layers-body').innerHTML=items.map(([type,label,count,status])=>`<button class="layer-card ${layers[type]===false?'disabled':''}" onclick="UI.toggleLayer('${type}')" aria-label="${label}: ${esc(status)}" ${type!=='mil'?`aria-pressed="${layers[type]}"`:''}>${Icons.svg(type,27)}<strong>${count.toLocaleString()} <span style="font-size:9px;font-weight:400">${label}</span></strong><small>${esc(status)}</small></button>`).join('');
+  }
+  function toggleLayer(type){if(type==='mil'){setFilterType('mil');return;}if(type==='ship'&&Vessels.status==='unconfigured'){openConnections();return;}
+    layers[type]=!layers[type];applyLayers();if(selection?.type===type&&!layers[type])deselect();buildDataLayers();buildList();}
+  function applyLayers(){Globe.satGroup.visible=layers.sat;Globe.airGroup.visible=layers.air;Globe.shipGroup.visible=layers.ship;}
+  function setSearchQuery(q){search=q.trim().toLowerCase();buildList();}
+  function setFilterType(t){filter=t;document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===t));buildList();}
+  function buildList(){
+    const el=document.getElementById('list'),items=[];
+    for(const [type,mod] of Object.entries(modules())){if(!layers[type])continue;if(filter!=='all'&&filter!==type&&!(filter==='mil'&&type==='air'))continue;
+      mod.list.forEach((obj,idx)=>{
+        if(filter==='mil'&&!obj.military)return;
+        if(type==='air'&&!Aircraft.freshPosition(obj.time_position))return;
+        if(type==='ship'&&Date.now()/1000-obj.observedAt>600)return;
+        const name=nameOf(type,obj),id=identity(type,obj);
+        if(search&&![name,id,obj.origin_country||''].join(' ').toLowerCase().includes(search))return;
+        items.push({type,obj,idx,name,id});
+      });
     }
-    loop();
-  }
-
-  function _drawTargetReticle(screen, t, name) {
-    const pulse = 24 + Math.sin(t * 0.06) * 6;
-    const alpha = 0.7 + Math.sin(t * 0.05) * 0.2;
-    tctx.save();
-    tctx.translate(screen.x, screen.y);
-    tctx.rotate(t * 0.008);
-    tctx.strokeStyle = `rgba(0,255,204,${alpha * 0.4})`;
-    tctx.lineWidth = 1; tctx.setLineDash([6, 10]);
-    tctx.beginPath(); tctx.arc(0, 0, pulse * 2.8, 0, Math.PI * 2); tctx.stroke();
-    tctx.setLineDash([]);
-    tctx.restore();
-    tctx.strokeStyle = `rgba(0,255,200,${alpha})`; tctx.lineWidth = 1.5;
-    tctx.beginPath(); tctx.arc(screen.x, screen.y, pulse, 0, Math.PI * 2); tctx.stroke();
-    const arm = pulse * 2.2, gap = pulse * 1.15;
-    tctx.strokeStyle = `rgba(0,240,200,${alpha * 0.8})`; tctx.lineWidth = 1;
-    [[screen.x - arm, screen.y, screen.x - gap, screen.y],
-     [screen.x + gap, screen.y, screen.x + arm, screen.y],
-     [screen.x, screen.y - arm, screen.x, screen.y - gap],
-     [screen.x, screen.y + gap, screen.x, screen.y + arm]].forEach(([x1,y1,x2,y2]) => {
-       tctx.beginPath(); tctx.moveTo(x1, y1); tctx.lineTo(x2, y2); tctx.stroke();
-     });
-    tctx.fillStyle = `rgba(0,255,204,${alpha})`;
-    tctx.font = '8px "Orbitron", monospace';
-    tctx.fillText('TARGET LOCKED', screen.x + pulse * 1.3, screen.y - 8);
-    tctx.fillStyle = `rgba(0,220,180,0.7)`;
-    tctx.font = '7px "Share Tech Mono", monospace';
-    tctx.fillText(name, screen.x + pulse * 1.3, screen.y + 6);
-  }
-
-  function clearTargets() {
-    if (targetAnimFrame) cancelAnimationFrame(targetAnimFrame);
-    if (tctx) tctx.clearRect(0, 0, tcanvas.width, tcanvas.height);
-  }
-
-  // ── GOD VIEW ─────────────────────────────────────────────
-  function toggleGodView() {
-    godMode = !godMode;
-    const btn   = document.getElementById('god-btn');
-    const flash = document.getElementById('god-flash');
-    flash.style.opacity = '0.7';
-    setTimeout(() => { flash.style.opacity = '0'; }, 150);
-
-    if (godMode) {
-      btn.classList.add('active');
-      btn.textContent = 'God View On';
-      document.body.classList.add('godview');
-      document.getElementById('god-overlay').classList.add('on');
-      document.getElementById('gl-tl').textContent = '⚠ GLOBAL THREAT ASSESSMENT — ACTIVE';
-      document.getElementById('gl-br').textContent = 'DEFCON STATUS: ELEVATED';
-      document.getElementById('main-title').innerHTML = 'GODS <em>EYE</em>';
-      document.getElementById('ftr-label').textContent = 'GODS EYE v5.2 // GOD VIEW ACTIVE // ALL OBJECTS FLAGGED AS THREATS';
-      document.getElementById('rph-label').textContent = '// THREAT TELEMETRY';
-      document.getElementById('panel-label').textContent = '// THREAT OBJECTS';
-      Globe.enterGodView();
-      Satellites.recolor(true);
-      Aircraft.recolor(true);
-      updateThreatCounts();
-      renderGodDashboard();
-      drawTargets();
-    } else {
-      btn.classList.remove('active');
-      btn.textContent = 'God View';
-      document.body.classList.remove('godview');
-      document.getElementById('god-overlay').classList.remove('on');
-      document.getElementById('gl-tl').textContent = 'WORLD VIEW / PUBLIC DATA';
-      document.getElementById('gl-br').textContent = 'CELESTRAK / OPENSKY';
-      document.getElementById('main-title').innerHTML = 'GODS <em>EYE</em>';
-      document.getElementById('ftr-label').textContent = 'GODS EYE v5.2 // UNCLASSIFIED // PUBLIC DATA ONLY';
-      document.getElementById('rph-label').textContent = 'TELEMETRY';
-      document.getElementById('panel-label').textContent = 'OBJECTS';
-      Globe.exitGodView();
-      Satellites.recolor(false);
-      Aircraft.recolor(false);
-      clearTargets();
-      document.getElementById('god-dashboard').innerHTML = '';
+    document.getElementById('lcount').textContent=items.length.toLocaleString();
+    document.getElementById('list-label').textContent=items.length>300?'FIRST 300 / SEARCH TO FIND MORE':'AVAILABLE OBJECTS';
+    if(!items.length){
+      let title='No matching objects',message='Try another search or turn on a data layer.';
+      if(!search&&['air','mil'].includes(filter)){title='Flight feed unavailable';message=Aircraft.error||'No recent aircraft observations were returned. Connect a feed server for authenticated access.';}
+      if(!search&&filter==='ship'){title='Connect maritime data';message=Vessels.error||'Vessel tracking is ready for AIS observations. Connect your feed server to populate this layer.';}
+      el.innerHTML=`<div class="empty-list"><strong>${esc(title)}</strong>${esc(message)}${['air','mil','ship'].includes(filter)?'<button class="primary-button" onclick="UI.openConnections()">Data connections</button>':''}</div>`;return;
     }
+    el.innerHTML=items.slice(0,300).map(({type,obj,idx,name,id})=>`<button class="object-row ${selection?.type===type&&selection.id===id?'selected':''}" data-type="${type}" data-index="${idx}"><span class="object-icon">${Icons.svg(type==='air'&&obj.military?'mil':type,27)}</span><span class="object-text"><strong>${esc(name)}</strong><small>${type==='sat'?'NORAD':type==='air'?'ICAO':'MMSI'} ${esc(id)}</small></span><span class="object-type">${type==='sat'?(CONFIG.catMeta[obj.cat]?.label||'SAT'):type==='air'?(obj.military?'MIL*':'AIR'):'AIS'}</span></button>`).join('');
+    el.querySelectorAll('[data-index]').forEach(b=>b.onclick=()=>select(b.dataset.type,Number(b.dataset.index)));
   }
-
-  function updateThreatCounts() {
-    const c = Satellites.getThreatCounts();
-    document.getElementById('t-threats').textContent = c.total + Aircraft.list.length;
-    document.getElementById('t-leo').textContent = c.leo;
-    document.getElementById('t-meo').textContent = c.meo;
-    document.getElementById('t-geo').textContent = c.geo;
+  function select(type,idx){const o=modules()[type]?.list[idx];if(!o)return;
+    Satellites.deselect();selection={type,id:identity(type,o)};index=idx;layers[type]=true;applyLayers();
+    if(type==='sat')Satellites.select(idx);else Globe.track(mesh());
+    openPanel('detail');document.body.classList.remove('explorer-open');
+    document.getElementById('tracking-bar').hidden=false;document.getElementById('track-name').textContent=selectedName();
+    document.getElementById('map-hint').hidden=true;buildList();renderDetail();
   }
-
-  // ── GOD VIEW Dashboard ────────────────────────────────────
-  function renderGodDashboard() {
-    const el = document.getElementById('god-dashboard');
-    if (!el) return;
-    const c  = Satellites.getThreatCounts();
-    const milCount = Aircraft.list.filter(a => a.military).length;
-
-    el.innerHTML = `
-      <div class="gd-section">
-        <div class="gd-stamp">// THREAT ASSESSMENT ACTIVE</div>
-        <div class="gd-stamp-sub">TS // SI-TK // NOFORN</div>
-      </div>
-      <div class="gd-cards">
-        <div class="gd-card gd-card-primary">
-          <div class="gd-card-icon">🛰️</div>
-          <div class="gd-card-val">${c.total.toLocaleString()}</div>
-          <div class="gd-card-label">SATELLITES</div>
-        </div>
-        <div class="gd-card">
-          <div class="gd-card-icon">✈️</div>
-          <div class="gd-card-val">${Aircraft.list.length.toLocaleString()}</div>
-          <div class="gd-card-label">AIRCRAFT</div>
-        </div>
-        <div class="gd-card gd-card-alert">
-          <div class="gd-card-icon">🪖</div>
-          <div class="gd-card-val">${milCount}</div>
-          <div class="gd-card-label">MILITARY</div>
-        </div>
-      </div>
-      <div class="gd-orbit-table">
-        <div class="gd-orbit-row">
-          <span class="gd-orbit-label">LEO <span class="gd-orbit-sub">&lt;2000km</span></span>
-          <div class="gd-orbit-bar-wrap"><div class="gd-orbit-bar" style="width:${Math.min(100,(c.leo/Math.max(c.total,1))*100).toFixed(1)}%"></div></div>
-          <span class="gd-orbit-val">${c.leo}</span>
-        </div>
-        <div class="gd-orbit-row">
-          <span class="gd-orbit-label">MEO <span class="gd-orbit-sub">2k–35k</span></span>
-          <div class="gd-orbit-bar-wrap"><div class="gd-orbit-bar gd-orbit-bar-meo" style="width:${Math.min(100,(c.meo/Math.max(c.total,1))*100).toFixed(1)}%"></div></div>
-          <span class="gd-orbit-val">${c.meo}</span>
-        </div>
-        <div class="gd-orbit-row">
-          <span class="gd-orbit-label">GEO <span class="gd-orbit-sub">&gt;35k</span></span>
-          <div class="gd-orbit-bar-wrap"><div class="gd-orbit-bar gd-orbit-bar-geo" style="width:${Math.min(100,(c.geo/Math.max(c.total,1))*100).toFixed(1)}%"></div></div>
-          <span class="gd-orbit-val">${c.geo}</span>
-        </div>
-      </div>
-      <div class="gd-defcon">
-        <span class="gd-defcon-label">DEFCON</span>
-        <div class="gd-defcon-lights">
-          ${[1,2,3,4,5].map(n => `<div class="gd-defcon-light ${n >= 3 ? 'gd-defcon-active' : ''}">${n}</div>`).join('')}
-        </div>
-      </div>
-      <div class="gd-ticker"><span class="gd-ticker-label">DATA</span><span class="gd-ticker-msg">PUBLIC SOURCE POSITIONS · COVERAGE AND REFRESH TIMES VARY BY PROVIDER</span></div>`;
+  function rebindSelection(type){if(selection?.type!==type)return;index=modules()[type].list.findIndex(o=>identity(type,o)===selection.id);
+    if(index<0){deselect();return;}Globe.track(mesh());renderDetail();}
+  function deselect(){selection=null;index=null;Satellites.deselect();Globe.track(null);emptyDetail();document.getElementById('tracking-bar').hidden=true;document.getElementById('map-hint').hidden=false;document.body.classList.remove('inspector-open');buildList();}
+  function resetView(){deselect();Globe.reset();}
+  function toggleFollow(){Globe.setFollowing(!Globe.following);}
+  const number=(n,d=1,unit='')=>Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d})+unit:'Unavailable';
+  const row=(label,value)=>`<div class="detail-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  function emptyDetail(){document.getElementById('dname').textContent='Select an object';document.getElementById('detail-source').textContent='READY';
+    document.getElementById('dbody').innerHTML=`<div class="empty-hero"><div class="empty-hero-icon">${Icons.svg('globe',36)}</div><h3>A world in motion.<br>A closer perspective.</h3><p>Select a satellite, aircraft or vessel on Earth to follow its position and inspect the available data.</p><div class="quick-facts"><div>${Icons.svg('sat')} Propagated satellite orbits</div><div>${Icons.svg('air')} Reported flight positions</div><div>${Icons.svg('ship')} Maritime AIS observations</div></div><p class="inspector-note">Public data powers this simulator. Availability and observation times vary by source.</p></div>`;
   }
-
-  // ── DATA LAYERS panel ────────────────────────────────────
-  function buildDataLayers() {
-    const el = document.getElementById('data-layers-body');
-    if (!el) return;
-    const milCount = Aircraft.list.filter(a => a.military).length;
-    const satCount = Satellites.list.length;
-    const acCount  = Aircraft.list.length;
-    const now      = new Date().toUTCString().slice(17, 25) + ' UTC';
-
-    el.innerHTML = `
-      <div class="dl-row ${layerSat ? 'on' : ''}" onclick="UI.toggleLayer('sat')" title="Toggle satellites">
-        <div class="dl-icon">🛰️</div>
-        <div class="dl-info">
-          <div class="dl-name">Satellites</div>
-          <div class="dl-src">CelesTrak · ${now}</div>
-        </div>
-        <div class="dl-count">${satCount}</div>
-        <div class="dl-toggle ${layerSat ? 'on' : 'off'}">${layerSat ? 'ON' : 'OFF'}</div>
-      </div>
-      <div class="dl-row ${layerAir ? 'on' : ''}" onclick="UI.toggleLayer('air')" title="Toggle live flights">
-        <div class="dl-icon">✈️</div>
-        <div class="dl-info">
-          <div class="dl-name">Live Flights</div>
-          <div class="dl-src">OpenSky Network · ${layerAir ? now : 'never'}</div>
-        </div>
-        <div class="dl-count">${layerAir ? acCount : '—'}</div>
-        <div class="dl-toggle ${layerAir ? 'on' : 'off'}">${layerAir ? 'ON' : 'OFF'}</div>
-      </div>
-      <div class="dl-row ${layerAir ? 'on' : 'dim'}" onclick="UI.toggleMilitary()" title="Filter possible military aircraft by callsign">
-        <div class="dl-icon">🪖</div>
-        <div class="dl-info">
-          <div class="dl-name">Possible military</div>
-          <div class="dl-src">OpenSky hints · optional ADS-B feed</div>
-        </div>
-        <div class="dl-count">${layerAir ? milCount : '—'}</div>
-        <div class="dl-toggle ${layerAir && milCount > 0 ? 'on' : 'off'}">${layerAir && milCount > 0 ? 'ON' : 'OFF'}</div>
-      </div>
-      <div class="dl-row off" onclick="" title="Coming soon">
-        <div class="dl-icon">🌍</div>
-        <div class="dl-info">
-          <div class="dl-name">Country Borders</div>
-          <div class="dl-src">GeoJSON · coming soon</div>
-        </div>
-        <div class="dl-count">—</div>
-        <div class="dl-toggle off">OFF</div>
-      </div>`;
-  }
-
-  // ── Category Filter Panel ─────────────────────────────────
-  function buildCatFilterPanel() {
-    const el = document.getElementById('cat-filters');
-    if (!el) return;
-    const cats = Object.keys(CONFIG.catMeta).filter(c => c !== 'aircraft');
-    el.innerHTML = cats.map(cat => {
-      const meta = CONFIG.catMeta[cat];
-      return `<div class="cfitem" data-cat="${cat}" onclick="UI.toggleCatFilter('${cat}')" title="${meta.purpose}">
-        <span class="cficon">${meta.icon}</span>
-        <span class="cflabel">${meta.label}</span>
-      </div>`;
-    }).join('');
-  }
-
-  function toggleCatFilter(cat) {
-    Satellites.setCatFilter(cat, !Satellites.catFilter[cat]);
-    const el = document.querySelector(`.cfitem[data-cat="${cat}"]`);
-    if (el) el.classList.toggle('off', !Satellites.catFilter[cat]);
-    buildList();
-  }
-
-  // ── Layers ────────────────────────────────────────────────
-  function toggleLayer(type) {
-    if (type === 'sat') {
-      layerSat = !layerSat;
-      Globe.satGroup.visible  = layerSat;
-      Globe.labelGroup.children.filter(c => c.userData.satLabel).forEach(c => { c.visible = layerSat && Globe.zoom <= Satellites.LABEL_ZOOM_THRESHOLD; });
-    } else if (type === 'air') {
-      layerAir = !layerAir;
-      Globe.airGroup.visible = layerAir;
-      if (layerAir && Aircraft.list.length === 0) {
-        Aircraft.fetch().then(ok => {
-          if (ok) { Aircraft.buildMeshes(godMode); Aircraft.place(); buildList(); }
-          document.getElementById('adot').style.boxShadow = ok ? '0 0 5px #00f5ff' : 'none';
-          document.getElementById('acnt').textContent = ok ? Aircraft.list.length + ' ACFT' : 'ACFT OFFLINE';
-          buildDataLayers();
-        });
-        // Also try military feed
-        Aircraft.fetchMilitary().then(() => { buildDataLayers(); buildList(); });
-      }
-    } else if (type === 'nvg') {
-      shaderMode = shaderMode === 'nvg' ? 'normal' : 'nvg';
-      document.getElementById('tog-nvg').classList.toggle('on', shaderMode === 'nvg');
-      document.getElementById('tog-flir').classList.remove('on');
-      applyShader();
-    } else if (type === 'flir') {
-      shaderMode = shaderMode === 'flir' ? 'normal' : 'flir';
-      document.getElementById('tog-flir').classList.toggle('on', shaderMode === 'flir');
-      document.getElementById('tog-nvg').classList.remove('on');
-      applyShader();
+  function renderDetail(){const o=current();if(!o)return;const type=selection.type;
+    document.getElementById('dname').textContent=selectedName();
+    document.getElementById('detail-source').textContent=type==='sat'?'CALCULATED':'OBSERVED';
+    const icon=type==='air'&&o.military?'mil':type;
+    const category=type==='sat'?(CONFIG.catMeta[o.cat]?.purpose||'Satellite'):type==='air'?(o.military?'Possible military aircraft':'Aircraft'):'AIS vessel';
+    const observed=type==='air'?o.time_position:type==='ship'?o.observedAt:null;
+    const age=observed?Math.max(0,Math.floor(Date.now()/1000-observed)):null;
+    const epoch=type==='sat'&&Number.isFinite(o.satrec?.jdsatepoch)?new Date((o.satrec.jdsatepoch-2440587.5)*86400000).toISOString().replace('T',' ').slice(0,16)+' UTC':'Unavailable';
+    let rows='',source='';
+    if(type==='sat'){
+      rows=row('Altitude',number(o.alt,1,' km'))+row('Orbital speed',number(o.vel,3,' km/s'))+row('Orbit class',o.alt<2000?'Low Earth orbit':o.alt<35000?'Medium Earth orbit':'High Earth orbit')+row('Inclination',number(o.satrec?.inclo*180/Math.PI,2,'°'))+row('Period',number(o.satrec?.no?2*Math.PI/o.satrec.no:null,1,' min'))+row('Element epoch',epoch);
+      source='CelesTrak orbital elements, propagated with SGP4. This is a calculated position, not a live satellite camera.';
+    }else if(type==='air'){
+      rows=row('Altitude',number((o.geo_altitude??o.baro_altitude)!==null?(o.geo_altitude??o.baro_altitude)/1000:null,2,' km'))+row('Ground speed',number(Number.isFinite(o.velocity)?o.velocity*1.94384:null,0,' kn'))+row('Heading',number(o.true_track,0,'°'))+row('Country',o.origin_country||'Unavailable')+row('Squawk',o.squawk||'Unavailable')+row('Classification',o.classification==='callsign hint'?'Unverified callsign hint':o.classification==='provider military feed'?'Provider military feed':'Unverified');
+      source='OpenSky reported position. Icons briefly interpolate between received observations. No movement is invented after the last report.';
+    }else{
+      rows=row('MMSI',o.mmsi)+row('Speed over ground',number(o.speed,1,' kn'))+row('Course',number(o.course,0,'°'))+row('Heading',number(o.heading,0,'°'))+row('Source','AISStream')+row('Provider receipt time',new Date(o.observedAt*1000).toISOString().slice(11,19)+' UTC');
+      source='AIS-reported position via your feed server; age is measured from provider receipt time. AIS coverage is incomplete; vessels without a recent received report are not shown.';
     }
-    buildDataLayers();
+    const scroll=document.getElementById('dbody').scrollTop;
+    document.getElementById('dbody').innerHTML=`<div class="detail-hero"><div class="hero-icon">${Icons.svg(icon,36)}</div><div><strong>${esc(category)}</strong><small>${type==='sat'?'NORAD':type==='air'?'ICAO':'MMSI'} ${esc(identity(type,o))}</small></div></div><div class="position-grid"><div><span>LATITUDE</span><strong>${number(o.lat,3,'°')}</strong></div><div><span>LONGITUDE</span><strong>${number(o.lon,3,'°')}</strong></div></div><div class="detail-section"><div class="section-label">${type==='sat'?'ORBITAL TELEMETRY':'REPORTED TELEMETRY'}</div>${rows}</div>${age!==null?`<div class="observation-age ${age>60?'stale':''}">● ${type==='ship'?'Received':'Observed'} ${age}s ago${age>(type==='air'?120:600)?' · expired':''}</div>`:''}<div class="source-note"><strong>Source & accuracy</strong><br>${esc(source)}</div>`;
+    document.getElementById('dbody').scrollTop=scroll;
   }
-
-  function toggleMilitary() {
-    if (!layerAir) { toggleLayer('air'); return; }
-    Aircraft.fetchMilitary().then(count => {
-      Aircraft.buildMeshes(godMode);
-      Aircraft.place();
-      buildList();
-      buildDataLayers();
-    });
-  }
-
-  function applyShader() {
-    const ov = document.getElementById('shader-overlay');
-    Globe.canvas.className = '';
-    ov.className = '';
-    if (shaderMode === 'nvg')  { ov.classList.add('nvg');  Globe.canvas.classList.add('nvg'); }
-    else if (shaderMode === 'flir') { ov.classList.add('flir'); Globe.canvas.classList.add('flir'); }
-  }
-
-  // ── Radar ─────────────────────────────────────────────────
-  function toggleRadar() {
-    radarOpen = !radarOpen;
-    const panel = document.getElementById('radar-panel');
-    const btn   = document.getElementById('radar-btn');
-    if (radarOpen) {
-      panel.classList.add('open');
-      btn.classList.add('active');
-      Radar.activate(godMode);
-    } else {
-      panel.classList.remove('open');
-      btn.classList.remove('active');
-      Radar.deactivate();
-    }
-  }
-
-  // ── Unified Search + Filters ─────────────────────────────
-  function setSearchQuery(q) {
-    searchQuery = q;
-    buildList();
-  }
-
-  function setFilterType(type) {
-    filterType = type;
-    // Update filter pill UI
-    document.querySelectorAll('.filter-pill').forEach(p => {
-      p.classList.toggle('active', p.dataset.filter === type);
-    });
-    buildList();
-  }
-
-  function setFilterCountry(country) {
-    filterCountry = country.trim().toUpperCase();
-    buildList();
-  }
-
-  // ── List ──────────────────────────────────────────────────
-  function buildList() {
-    const el = document.getElementById('list');
-    el.innerHTML = '';
-    const q = searchQuery.toUpperCase();
-    let n = 0;
-
-    const allItems = [
-      ...Satellites.list.map((s, i) => ({
-        name: s.name, cat: s.cat, id: s.id,
-        country: '', military: false,
-        _type: 'sat', _idx: i,
-      })),
-      ...(layerAir ? Aircraft.list.map((a, i) => ({
-        name: (a.callsign || 'UNKNOWN').trim(),
-        cat: 'aircraft', id: a.icao24,
-        country: (a.origin_country || '').toUpperCase(),
-        military: a.military || false,
-        _type: 'air', _idx: i,
-      })) : []),
-    ];
-
-    allItems.forEach(obj => {
-      // Type filter
-      if (filterType === 'sat' && obj._type !== 'sat') return;
-      if (filterType === 'air' && obj._type !== 'air') return;
-      if (filterType === 'mil' && !obj.military) return;
-      // Country filter
-      if (filterCountry && obj.country && !obj.country.includes(filterCountry)) return;
-      // Category filter (satellites)
-      if (obj._type === 'sat' && Satellites.catFilter[obj.cat] === false) return;
-      // Text search
-      if (q && !obj.name.toUpperCase().includes(q) && !String(obj.id).includes(q)) return;
-
-      n++;
-      if (n > CONFIG.listRenderCap) return;
-
-      const isSel = obj._type === selectedType && obj._idx === selectedIdx;
-      const meta  = CONFIG.catMeta[obj.cat] || CONFIG.catMeta.other;
-      const div   = document.createElement('div');
-      div.className = 'sitem' + (isSel ? ' sel' : '') + (obj.military ? ' mil' : '');
-
-      const milBadge = obj.military ? '<span class="mil-badge">🪖 POSSIBLE MIL</span>' : '';
-      div.innerHTML = `
-        <div class="sitem-icon">${obj._type === 'air' ? (obj.military ? '🪖' : '✈️') : meta.icon}</div>
-        <div class="sitem-info">
-          <div class="sname">${Utils.escapeHTML(obj.name)}${milBadge}</div>
-          <div class="sid">${Utils.escapeHTML(obj._type === 'sat' ? 'NORAD:' + obj.id : 'ICAO:' + obj.id)}${obj.country ? ' · ' + Utils.escapeHTML(obj.country) : ''}</div>
-        </div>
-        <div class="cbadge ${meta.cssClass}">${meta.label}</div>`;
-      div.addEventListener('click', () => { obj._type === 'sat' ? selectSat(obj._idx) : selectAir(obj._idx); });
-      el.appendChild(div);
-    });
-
-    document.getElementById('lcount').textContent = n;
-  }
-
-  // ── Select Satellite ──────────────────────────────────────
-  function selectSat(idx) {
-    selectedIdx = idx; selectedType = 'sat';
-    buildList();
-    const sat = Satellites.list[idx];
-    if (sat && sat.cat === 'iss') showISSPanel(idx);
-    else updateDetail();
-    Satellites.drawTrail(idx, godMode);
-    Satellites.select(idx, godMode);
-    // Clear aircraft brackets
-    Globe.bracketGroup.children.filter(c => c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-    // Isolate — hide everything except this satellite
-    if (typeof SceneState !== 'undefined') SceneState.isolate('sat', idx);
-    // Show untrack button + DOM blinking bracket
-    const _satName = sat ? (sat.name.length > 18 ? `SAT-${sat.id}` : sat.name) : '';
-    showUntrackBtn('sat', _satName);
-    if (typeof TrackBracket !== 'undefined') TrackBracket.show('sat', idx, _satName);
-  }
-
-  // ── Deselect / Untrack ────────────────────────────────────
-  function deselect() {
-    selectedIdx  = null;
-    selectedType = 'sat';
-    Satellites.deselect();
-    Aircraft.showBracket(null, godMode);
-    Globe.bracketGroup.clear();
-    Globe.trailGroup.clear();
-    Globe.autoRot = true;
-    // Reset zoom back to default when untracking
-    Globe.zoom = 3.2;
-    // Reset right panel
-    document.getElementById('dname').textContent = 'Object details';
-    document.getElementById('dbody').innerHTML = '<div class="empty-state"><div class="empty-state-symbol">◎</div><h2>Explore the world</h2><p>Select a satellite or aircraft to inspect its reported position, source, and available telemetry.</p><div class="empty-state-tip">Drag to rotate the Earth · Scroll to zoom · Select an object to see details.</div></div>';
-    document.getElementById('poslabel').textContent = 'LAT: -- LON: --';
-    hideUntrackBtn();
-    if (typeof TrackBracket !== 'undefined') TrackBracket.hide();
-    if (typeof SceneState  !== 'undefined') SceneState.restore();
-    buildList();
-  }
-
-  // ── Untrack button ────────────────────────────────────────
-  function showUntrackBtn(type, name) {
-    let btn = document.getElementById('untrack-btn');
-    if (!btn) {
-      btn = document.createElement('button');
-      btn.id = 'untrack-btn';
-      btn.onclick = () => deselect();
-      document.getElementById('gw').appendChild(btn);
-    }
-    btn.textContent = `✕ UNTRACK ${name}`;
-    btn.style.cssText = `
-      position:absolute; bottom:40px; left:50%; transform:translateX(-50%);
-      font-family:var(--fd); font-size:8px; letter-spacing:2px;
-      padding:6px 16px; border:1px solid var(--c); color:var(--c);
-      background:rgba(0,0,0,.85); cursor:pointer; z-index:20;
-      clip-path:polygon(6px 0%,100% 0%,calc(100% - 6px) 100%,0% 100%);
-      box-shadow:0 0 12px rgba(0,245,255,.25); backdrop-filter:blur(8px);
-      transition:all .2s;
-    `;
-  }
-
-  function hideUntrackBtn() {
-    const btn = document.getElementById('untrack-btn');
-    if (btn) btn.remove();
-  }
-
-  // ── ISS Panel ─────────────────────────────────────────────
-  async function showISSPanel(idx) {
-    const sat = Satellites.list[idx];
-    if (!sat) return;
-    document.getElementById('dname').innerHTML = _issNameHTML();
-    document.getElementById('dbody').innerHTML = `<div class="iss-loading"><div class="iss-loading-dot"></div><span>FETCHING CREW DATA...</span></div>`;
-    await Satellites.fetchISSData();
-    const lat = sat.lat ?? 0, lon = sat.lon ?? 0, alt = sat.alt ?? 400, vel = sat.vel ?? 0;
-    const speedKmh = (vel * 3600).toFixed(0);
-    const speedKms = vel.toFixed(3);
-    const period   = (alt > 0 && vel > 0) ? (2 * Math.PI * (6371 + alt) / vel / 60).toFixed(2) : '---';
-    const inc      = sat.satrec ? (sat.satrec.inclo * 180 / Math.PI).toFixed(2) : '51.64';
-    const ecc      = sat.satrec ? sat.satrec.ecco.toFixed(6) : '---';
-    const mm       = sat.satrec ? (sat.satrec.no * 1440 / (2 * Math.PI)).toFixed(4) : '---';
-    const raan     = sat.satrec ? (sat.satrec.nodeo * 180 / Math.PI).toFixed(2) : '---';
-    const crew     = Satellites.issData.crew;
-    const altFt    = (alt * 3280.84).toFixed(0);
-
-    document.getElementById('dbody').innerHTML = `
-      <div class="dossier-header">
-        <div class="dossier-classification">UNCLASSIFIED // PUBLIC DATA // NASA / ESA / ROSCOSMOS</div>
-        <div class="dossier-id">ISS (ZARYA) · NORAD ${sat.id || '25544'} · OBJECT 1998-067A</div>
-      </div>
-      <div class="iss-badge">
-        <div class="iss-badge-title">INTERNATIONAL SPACE STATION</div>
-        <div class="iss-badge-sub">ALT ${alt.toFixed(0)} KM · ${speedKmh} KM/H · INCL ${inc}°</div>
-      </div>
-      <div class="iss-pos-row">
-        <div class="iss-pos-item"><div class="iss-pos-val">${lat.toFixed(2)}°</div><div class="iss-pos-label">LATITUDE</div></div>
-        <div class="iss-pos-item"><div class="iss-pos-val">${lon.toFixed(2)}°</div><div class="iss-pos-label">LONGITUDE</div></div>
-        <div class="iss-pos-item"><div class="iss-pos-val">${alt.toFixed(0)}</div><div class="iss-pos-label">ALT KM</div></div>
-      </div>
-      <div class="dblock">
-        <div class="dbtitle">// ORBITAL MECHANICS</div>
-        <div class="drow"><span class="dl">VELOCITY</span><span class="dv amb">${speedKmh} km/h</span></div>
-        <div class="drow"><span class="dl">SPEED (km/s)</span><span class="dv">${speedKms} km/s</span></div>
-        <div class="drow"><span class="dl">ALTITUDE (ft)</span><span class="dv">${altFt} ft</span></div>
-        <div class="drow"><span class="dl">ORBITAL PERIOD</span><span class="dv">${period} min</span></div>
-        <div class="drow"><span class="dl">INCLINATION</span><span class="dv">${inc}°</span></div>
-        <div class="drow"><span class="dl">ECCENTRICITY</span><span class="dv">${ecc}</span></div>
-        <div class="drow"><span class="dl">MEAN MOTION</span><span class="dv">${mm} rev/day</span></div>
-        <div class="drow"><span class="dl">RAAN</span><span class="dv">${raan}°</span></div>
-        <div class="drow"><span class="dl">ORBIT CLASS</span><span class="dv blu">LEO</span></div>
-      </div>
-      <div class="dblock">
-        <div class="dbtitle">// CREW MANIFEST — ${crew.length > 0 ? crew.length + ' PERSONNEL ABOARD' : 'DATA UNAVAILABLE'}</div>
-        ${crew.length > 0
-          ? crew.map(p => `<div class="iss-crew-row"><span class="iss-crew-icon">👨‍🚀</span><span class="iss-crew-name">${Utils.escapeHTML(p.name)}</span><span class="iss-crew-craft">ISS</span></div>`).join('')
-          : '<div class="iss-crew-row"><span class="iss-crew-name" style="opacity:.4">CREW DATA OFFLINE — OPEN-NOTIFY UNAVAILABLE</span></div>'}
-      </div>
-      <div id="mmc"><div class="dbtitle">// GROUND TRACK</div><canvas id="mmcanvas" width="264" height="110"></canvas></div>
-      <div id="tleblock">
-        <div class="dbtitle">// TLE ELEMENTS</div>
-        <div class="tleline">${sat.tle1 || '---'}</div>
-        <div class="tleline" style="margin-top:4px">${sat.tle2 || '---'}</div>
-      </div>`;
-    drawMiniMap(sat);
-    document.getElementById('poslabel').textContent = `LAT: ${lat.toFixed(2)} LON: ${lon.toFixed(2)}`;
-  }
-
-  function _issNameHTML() {
-    return `<div class="sat-header"><span class="sat-header-icon">🛰️</span><span class="sat-header-name">ISS — ZARYA</span></div>`;
-  }
-
-  // ── Select Aircraft ───────────────────────────────────────
-  async function selectAir(idx) {
-    selectedIdx = idx; selectedType = 'air';
-    buildList();
-    Aircraft.showBracket(idx, godMode);
-    Globe.bracketGroup.children.filter(c => !c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-    // Keep context around the selected aircraft.
-    Globe.zoom = 3.2;
-    const ac = Aircraft.list[idx];
-    if (ac && ac.lat != null) {
-      Globe.rotY = (-ac.lon - 90) * Math.PI / 180;
-      Globe.rotX = -ac.lat * Math.PI / 180 * 0.4;
-      Globe.autoRot = false;
-    }
-    const cs = (ac.callsign || 'UNKNOWN').trim();
-    document.getElementById('dname').innerHTML = _airNameHTML(ac, cs);
-    document.getElementById('dbody').innerHTML = _airBasicHTML(ac, cs);
-    showUntrackBtn('air', cs);
-    if (typeof SceneState !== 'undefined') SceneState.isolate('air', idx);
-    if (typeof TrackBracket !== 'undefined') TrackBracket.show('air', idx, cs);
-    const route = await Aircraft.fetchRoute(cs);
-    _renderAirFull(ac, cs, route);
-  }
-
-  function _airNameHTML(ac, cs) {
-    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 POSSIBLE MILITARY</span>' : '';
-    return `<div class="ac-header"><div class="ac-callsign">${Utils.escapeHTML(cs)}${milTag}</div><div class="ac-airline ac-airline-loading">FETCHING ROUTE...</div></div>`;
-  }
-
-  function _airBasicHTML(ac, cs) {
-    const altM  = ac.baro_altitude || ac.geo_altitude || 0;
-    const altFt = Math.round(altM * 3.28084);
-    const velKts= ac.velocity ? Math.round(ac.velocity * 1.944) : null;
-    const velKmh= ac.velocity ? Math.round(ac.velocity * 3.6) : null;
-    return `
-      <div class="dossier-header">
-        <div class="dossier-classification">${airProvenance(ac)}</div>
-        <div class="dossier-id">ICAO: ${Utils.escapeHTML(ac.icao24 || '---')} · SQUAWK: ${Utils.escapeHTML(ac.squawk || '---')}</div>
-      </div>
-      <div class="ac-route-block ac-skeleton">
-        <div class="ac-airports">
-          <div class="ac-airport"><div class="ac-iata">???</div><div class="ac-city">FETCHING...</div></div>
-          <div class="ac-route-arrow">✈</div>
-          <div class="ac-airport ac-airport-right"><div class="ac-iata">???</div><div class="ac-city">FETCHING...</div></div>
-        </div>
-      </div>
-      ${_airTelemetryHTML(ac, altM, altFt, velKts, velKmh)}`;
-  }
-
-  function _renderAirFull(ac, cs, route) {
-    if (selectedType !== 'air' || Aircraft.list[selectedIdx] !== ac) return;
-    const r = route;
-    const altM  = ac.baro_altitude || ac.geo_altitude || 0;
-    const altFt = Math.round(altM * 3.28084);
-    const velKts= ac.velocity ? Math.round(ac.velocity * 1.944) : null;
-    const velKmh= ac.velocity ? Math.round(ac.velocity * 3.6) : null;
-    const fmt = iso => {
-      if (!iso) return '---';
-      const d = new Date(iso);
-      return Number.isFinite(d.getTime()) ? d.toUTCString().slice(17, 22) + ' UTC' : '---';
-    };
-    const depIata = r?.dep.iata || '???', depCity = (r?.dep.airport || 'UNKNOWN').split(' ')[0];
-    const arrIata = r?.arr.iata || '???', arrCity = (r?.arr.airport || 'UNKNOWN').split(' ')[0];
-    const airline = r?.airline || ac.origin_country || '---';
-    const acType  = r?.aircraftType || ac.aircraftType || '---';
-    const reg     = r?.registration || ac.registration || '---';
-    let pct = 50;
-    if (r?.dep.scheduled && r?.arr.scheduled) {
-      const d = new Date(r.dep.scheduled).getTime(), a = new Date(r.arr.scheduled).getTime(), now = Date.now();
-      if (Number.isFinite(d) && Number.isFinite(a) && a > d)
-        pct = Math.max(5, Math.min(95, ((now - d) / (a - d)) * 100));
-    }
-    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 POSSIBLE MILITARY</span>' : '';
-
-    document.getElementById('dname').innerHTML = `<div class="ac-header"><div class="ac-callsign">${Utils.escapeHTML(cs)}${milTag}</div><div class="ac-airline">${Utils.escapeHTML(airline)}</div></div>`;
-    document.getElementById('dbody').innerHTML = `
-      <div class="dossier-header">
-        <div class="dossier-classification">${airProvenance(ac)}</div>
-        <div class="dossier-id">ICAO: ${Utils.escapeHTML(ac.icao24 || '---')} · ${Utils.escapeHTML(acType)} · ${Utils.escapeHTML(reg)}</div>
-      </div>
-      <div class="ac-route-block">
-        <div class="ac-airports">
-          <div class="ac-airport"><div class="ac-iata">${Utils.escapeHTML(depIata)}</div><div class="ac-city">${Utils.escapeHTML(depCity.toUpperCase())}</div></div>
-          <div class="ac-route-arrow">✈</div>
-          <div class="ac-airport ac-airport-right"><div class="ac-iata">${Utils.escapeHTML(arrIata)}</div><div class="ac-city">${Utils.escapeHTML(arrCity.toUpperCase())}</div></div>
-        </div>
-        <div class="ac-progress-wrap">
-          <div class="ac-progress-track">
-            <div class="ac-progress-bar" style="width:${pct.toFixed(1)}%"></div>
-            <div class="ac-progress-plane" style="left:${pct.toFixed(1)}%">✈</div>
-          </div>
-        </div>
-        <div class="ac-times-grid">
-          <div class="ac-time-col">
-            <div class="ac-time-row"><span class="ac-time-label">SCHED</span><span class="ac-time-val">${fmt(r?.dep.scheduled)}</span></div>
-            <div class="ac-time-row"><span class="ac-time-label">ACTUAL</span><span class="ac-time-val amb">${fmt(r?.dep.actual)}</span></div>
-          </div>
-          <div class="ac-time-col ac-time-col-right">
-            <div class="ac-time-row"><span class="ac-time-label">SCHED</span><span class="ac-time-val">${fmt(r?.arr.scheduled)}</span></div>
-            <div class="ac-time-row"><span class="ac-time-label">EST</span><span class="ac-time-val amb">${fmt(r?.arr.estimated)}</span></div>
-          </div>
-        </div>
-      </div>
-      ${_airTelemetryHTML(ac, altM, altFt, velKts, velKmh)}`;
-  }
-
-  function _airTelemetryHTML(ac, altM, altFt, velKts, velKmh) {
-    const lat = ac.lat != null ? ac.lat.toFixed(4) + '°' : '---';
-    const lon = ac.lon != null ? ac.lon.toFixed(4) + '°' : '---';
-    const fl  = altM ? 'FL' + Math.round(altM * 3.28084 / 100) : '---';
-    const squawkClass = (ac.squawk === '7700' || ac.squawk === '7500' || ac.squawk === '7600') ? 'red' : 'amb';
-    const squawkNote  = ac.squawk === '7700' ? ' ⚠ EMERGENCY' : ac.squawk === '7500' ? ' ⚠ HIJACK' : ac.squawk === '7600' ? ' ⚠ COMMS FAIL' : '';
-    return `
-      <div class="dblock">
-        <div class="dbtitle">// REPORTED POSITION</div>
-        <div class="drow"><span class="dl">OBSERVED (UTC)</span><span class="dv">${ac.time_position ? new Date(ac.time_position * 1000).toISOString().replace('T', ' ').slice(0, 19) : '---'}</span></div>
-        <div class="drow"><span class="dl">LATITUDE</span><span class="dv">${lat}</span></div>
-        <div class="drow"><span class="dl">LONGITUDE</span><span class="dv">${lon}</span></div>
-        <div class="drow"><span class="dl">ALTITUDE</span><span class="dv amb">${altM ? Math.round(altM) + ' m' : '---'}</span></div>
-        <div class="drow"><span class="dl">FLIGHT LEVEL</span><span class="dv amb">${fl}</span></div>
-        <div class="drow"><span class="dl">ALT (ft)</span><span class="dv">${altFt ? altFt.toLocaleString() + ' ft' : '---'}</span></div>
-      </div>
-      <div class="dblock">
-        <div class="dbtitle">// REPORTED TELEMETRY</div>
-        <div class="drow"><span class="dl">SPEED</span><span class="dv">${velKmh ? velKmh + ' km/h' : '---'}</span></div>
-        <div class="drow"><span class="dl">SPEED (kts)</span><span class="dv">${velKts ? velKts + ' kts' : '---'}</span></div>
-        <div class="drow"><span class="dl">HEADING</span><span class="dv">${ac.true_track ? ac.true_track.toFixed(1) + '°' : '---'}</span></div>
-        <div class="drow"><span class="dl">VERT RATE</span><span class="dv">${ac.vertical_rate ? (ac.vertical_rate > 0 ? '▲ ' : '▼ ') + Math.abs(ac.vertical_rate).toFixed(1) + ' m/s' : '---'}</span></div>
-        <div class="drow"><span class="dl">SQUAWK</span><span class="dv ${squawkClass}">${Utils.escapeHTML(ac.squawk || '---')}${squawkNote}</span></div>
-        <div class="drow"><span class="dl">ON GROUND</span><span class="dv ${ac.on_ground ? 'amb' : 'blu'}">${ac.on_ground ? '▣ GROUND' : '▲ AIRBORNE'}</span></div>
-      </div>
-      <div class="dblock">
-        <div class="dbtitle">// IDENTIFICATION</div>
-        <div class="drow"><span class="dl">ICAO24</span><span class="dv">${Utils.escapeHTML(ac.icao24 || '---')}</span></div>
-        <div class="drow"><span class="dl">COUNTRY</span><span class="dv">${Utils.escapeHTML(ac.origin_country || '---')}</span></div>
-        <div class="drow"><span class="dl">CLASSIFICATION</span><span class="dv ${ac.military ? 'teal' : 'blu'}">${ac.classification === 'provider military feed' ? 'PROVIDER MILITARY' : ac.classification === 'callsign hint' ? 'POSSIBLE · CALLSIGN HINT' : 'UNVERIFIED'}</span></div>
-        <div class="drow"><span class="dl">SOURCE</span><span class="dv" style="font-size:8px">${ac.source === 'adsbx' ? 'ADS-B EXCHANGE' : 'OPENSKY NETWORK'}</span></div>
-      </div>`;
-  }
-
-  function airProvenance(ac) {
-    return ac.classification === 'provider military feed'
-      ? `PROVIDER MILITARY · ${ac.source === 'adsbx' ? 'ADS-B EXCHANGE POSITION' : 'OPENSKY POSITION'}`
-      : ac.classification === 'callsign hint' ? 'POSSIBLE MILITARY · CALLSIGN HINT · OPENSKY'
-      : 'AIRCRAFT · OPENSKY NETWORK';
-  }
-
-  function refreshSelectedAir() {
-    if (selectedType !== 'air' || selectedIdx === null) return;
-    const ac = Aircraft.list[selectedIdx];
-    if (!ac) { deselect(); return; }
-    const cs = (ac.callsign || 'UNKNOWN').trim();
-    document.getElementById('dname').innerHTML = _airNameHTML(ac, cs);
-    document.getElementById('dbody').innerHTML = _airBasicHTML(ac, cs);
-    _renderAirFull(ac, cs, ac.route);
-  }
-
-  // ── Satellite Detail (Palantir dossier style) ─────────────
-  function updateDetail() {
-    if (selectedType !== 'sat' || selectedIdx === null) return;
-    const sat = Satellites.list[selectedIdx];
-    if (!sat) return;
-    if (sat.cat === 'iss') { showISSPanel(selectedIdx); return; }
-
-    const lat = sat.lat ?? 0, lon = sat.lon ?? 0, alt = sat.alt ?? 0, vel = sat.vel ?? 0;
-    const period = (alt > 0 && vel > 0) ? (2 * Math.PI * (6371 + alt) / vel / 60) : 0;
-    const ot  = alt < 2000 ? 'LEO' : alt < 35786 ? 'MEO' : 'GEO';
-    const inc = sat.satrec ? (sat.satrec.inclo * 180 / Math.PI).toFixed(2) : '---';
-    const ecc = sat.satrec ? sat.satrec.ecco.toFixed(6) : '---';
-    const mm  = sat.satrec ? (sat.satrec.no * 1440 / (2 * Math.PI)).toFixed(4) : '---';
-    const raan= sat.satrec ? (sat.satrec.nodeo * 180 / Math.PI).toFixed(2) : '---';
-    const argp= sat.satrec ? (sat.satrec.argpo * 180 / Math.PI).toFixed(2) : '---';
-    // Launch year from TLE epoch
-    const epochStr = sat.tle1 ? sat.tle1.substring(18, 32).trim() : '';
-    const epochYY  = epochStr ? parseInt(epochStr.substring(0, 2)) : null;
-    const launchYr = epochYY !== null ? (epochYY >= 57 ? 1900 + epochYY : 2000 + epochYY) : '---';
-    const meta= CONFIG.catMeta[sat.cat] || CONFIG.catMeta.other;
-
-    document.getElementById('dname').innerHTML = `
-      <div class="sat-header">
-        <span class="sat-header-icon">${meta.icon}</span>
-        <span class="sat-header-name">${Utils.escapeHTML(sat.name.length > 20 ? 'SAT-' + sat.id : sat.name)}</span>
-      </div>`;
-
-    document.getElementById('dbody').innerHTML = `
-      <div class="dossier-header">
-        <div class="dossier-classification">CELESTRAK ELEMENTS · SGP4 PROPAGATION</div>
-        <div class="dossier-id">NORAD ${sat.id} · ${Utils.escapeHTML(sat.name)}</div>
-      </div>
-      <div class="sat-purpose-badge">${meta.icon} ${meta.purpose}</div>
-
-      <div class="dblock">
-        <div class="dbtitle">// CALCULATED POSITION (UTC)</div>
-        <div class="drow"><span class="dl">ELEMENT EPOCH</span><span class="dv">${sat.satrec ? new Date(Date.UTC(sat.satrec.epochyr >= 57 ? 1900 + sat.satrec.epochyr : 2000 + sat.satrec.epochyr, 0, 1) + (sat.satrec.epochdays - 1) * 86400000).toISOString().slice(0, 16).replace('T', ' ') : '---'}</span></div>
-        <div class="drow"><span class="dl">LATITUDE</span><span class="dv">${lat.toFixed(4)}°</span></div>
-        <div class="drow"><span class="dl">LONGITUDE</span><span class="dv">${lon.toFixed(4)}°</span></div>
-        <div class="drow"><span class="dl">ALTITUDE</span><span class="dv amb">${alt.toFixed(1)} km</span></div>
-        <div class="drow"><span class="dl">ORBIT CLASS</span><span class="dv ${godMode ? 'teal' : 'blu'}">${ot}</span></div>
-        ${godMode ? '<div class="drow"><span class="dl">THREAT STATUS</span><span class="dv teal">⚠ FLAGGED</span></div>' : ''}
-      </div>
-
-      <div class="dblock">
-        <div class="dbtitle">// ORBITAL MECHANICS</div>
-        <div class="drow"><span class="dl">VELOCITY</span><span class="dv amb">${(vel * 3600).toFixed(0)} km/h</span></div>
-        <div class="drow"><span class="dl">SPEED (km/s)</span><span class="dv">${vel.toFixed(3)} km/s</span></div>
-        <div class="drow"><span class="dl">PERIOD</span><span class="dv">${period > 0 ? period.toFixed(2) + ' min' : '---'}</span></div>
-        <div class="drow"><span class="dl">INCLINATION</span><span class="dv">${inc}°</span></div>
-        <div class="drow"><span class="dl">ECCENTRICITY</span><span class="dv">${ecc}</span></div>
-        <div class="drow"><span class="dl">MEAN MOTION</span><span class="dv">${mm} rev/day</span></div>
-        <div class="drow"><span class="dl">RAAN</span><span class="dv">${raan}°</span></div>
-        <div class="drow"><span class="dl">ARG OF PERIGEE</span><span class="dv">${argp}°</span></div>
-      </div>
-
-      <div class="dblock">
-        <div class="dbtitle">// IDENTIFICATION</div>
-        <div class="drow"><span class="dl">NORAD ID</span><span class="dv">${sat.id}</span></div>
-        <div class="drow"><span class="dl">FULL NAME</span><span class="dv" style="font-size:8px;letter-spacing:.5px">${Utils.escapeHTML(sat.name)}</span></div>
-        <div class="drow"><span class="dl">CATEGORY</span><span class="dv">${meta.label}</span></div>
-        <div class="drow"><span class="dl">PURPOSE</span><span class="dv" style="font-size:8px">${meta.purpose}</span></div>
-        <div class="drow"><span class="dl">EPOCH YEAR</span><span class="dv">${launchYr}</span></div>
-        <div class="drow"><span class="dl">STATUS</span><span class="dv ${godMode ? 'teal' : 'blu'}">${godMode ? '⚠ HOSTILE' : '✓ TRACKED'}</span></div>
-      </div>
-
-      <div id="mmc">
-        <div class="dbtitle">// GROUND TRACK</div>
-        <canvas id="mmcanvas" width="264" height="110"></canvas>
-      </div>
-      <div id="tleblock">
-        <div class="dbtitle">// TLE ELEMENTS</div>
-        <div class="tleline">${Utils.escapeHTML(sat.tle1 || '---')}</div>
-        <div class="tleline" style="margin-top:4px">${Utils.escapeHTML(sat.tle2 || '---')}</div>
-      </div>`;
-
-    drawMiniMap(sat);
-    document.getElementById('poslabel').textContent = `LAT: ${lat.toFixed(2)} LON: ${lon.toFixed(2)}`;
-  }
-
-  function drawMiniMap(sat) {
-    const cv = document.getElementById('mmcanvas');
-    if (!cv) return;
-    const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    const bg    = godMode ? '#0d0000' : '#000510';
-    const grid  = godMode ? 'rgba(0,255,200,0.1)' : 'rgba(0,245,255,0.07)';
-    const dotC  = godMode ? '#00ffcc' : '#ffb700';
-    const trailC= godMode ? 'rgba(0,255,180,0.4)' : 'rgba(255,204,0,0.5)';
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-    ctx.strokeStyle = grid; ctx.lineWidth = 0.5;
-    for (let x = 0; x < W; x += W / 6) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-    for (let y = 0; y < H; y += H / 3) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-    const h = Satellites.trails[selectedIdx];
-    if (h && h.length > 1) {
-      ctx.strokeStyle = trailC; ctx.lineWidth = 1; ctx.beginPath();
-      h.forEach((p, i) => { const x = (p.lon + 180) / 360 * W, y = (90 - p.lat) / 180 * H; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.stroke();
-    }
-    if (sat.lat != null) {
-      const x = (sat.lon + 180) / 360 * W, y = (90 - sat.lat) / 180 * H;
-      ctx.fillStyle = dotC; ctx.shadowColor = dotC; ctx.shadowBlur = 8;
-      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
-    }
-  }
-
-  // ── Raycasting ────────────────────────────────────────────
-  function initRaycast() {
-    const ray   = new THREE.Raycaster();
-    const mouse = new THREE.Vector2();
-    const tip   = document.getElementById('tip');
-
-    // ESC to untrack
-    window.addEventListener('keydown', e => {
-      if (e.key === 'Escape') deselect();
-    });
-
-    Globe.canvas.addEventListener('click', e => {
-      if (Globe.drag) return;
-      const rect = Globe.canvas.getBoundingClientRect();
-      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      ray.setFromCamera(mouse, Globe.camera);
-      const all  = [...(layerSat ? Satellites.meshes : []), ...(layerAir ? Aircraft.meshes : [])];
-      const hits = ray.intersectObjects(all).filter(h => !h.object.userData.isBlocker && !h.object.userData.isFlag && !h.object.userData.isGridLabel);
-      if (hits.length) {
-        const ud = hits[0].object.userData;
-        ud.type === 'sat' ? selectSat(ud.idx) : selectAir(ud.idx);
-      }
-    });
-
-    Globe.canvas.addEventListener('mousemove', e => {
-      const rect = Globe.canvas.getBoundingClientRect();
-      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      ray.setFromCamera(mouse, Globe.camera);
-      const all  = [...(layerSat ? Satellites.meshes : []), ...(layerAir ? Aircraft.meshes : [])];
-      const hits = ray.intersectObjects(all);
-      if (hits.length) {
-        const ud   = hits[0].object.userData;
-        const name = ud.type === 'sat' ? ud.obj.name : ((ud.obj.callsign || 'UNKNOWN').trim());
-        const id   = ud.type === 'sat' ? 'NORAD:' + ud.obj.id : 'ICAO:' + (ud.obj.icao24 || '?');
-        const milFlag = ud.type === 'air' && ud.obj.military ? ' 🪖' : '';
-        tip.style.cssText = `display:block;left:${e.clientX + 14}px;top:${e.clientY - 10}px`;
-        tip.textContent   = (godMode ? '⚠ TARGET: ' : '') + name + milFlag + '  ' + id;
-        Globe.canvas.style.cursor = 'crosshair';
-      } else {
-        tip.style.display = 'none';
-        Globe.canvas.style.cursor = Globe.drag ? 'grabbing' : 'grab';
-      }
-    });
-  }
-
-  return {
-    initTargeting, initRaycast, toggleGodView, toggleLayer, toggleMilitary, toggleRadar,
-    buildList, buildDataLayers, buildCatFilterPanel, toggleCatFilter,
-    selectSat, selectAir, updateDetail, refreshSelectedAir, updateThreatCounts, renderGodDashboard,
-    setSearchQuery, setFilterType, setFilterCountry, deselect,
-    get godMode()     { return godMode; },
-    get selectedIdx() { return selectedIdx; },
-    get selectedType(){ return selectedType; },
+  function tick(){if(selection)renderDetail();document.getElementById('follow-btn').textContent=Globe.following?'Following':'Resume';}
+  return {init,openPanel,openConnections,setView,buildDataLayers,buildList,applyLayers,toggleLayer,setSearchQuery,setFilterType,select,rebindSelection,deselect,resetView,toggleFollow,renderDetail,tick,
+    selectSat:i=>select('sat',i),selectAir:i=>select('air',i),
+    get selectedMesh(){return mesh();},get selectedName(){return selectedName();},get selectedType(){return selection?.type;},get selectedIdx(){return index;},get selectionKey(){return selection?selection.type+':'+selection.id:'';},get panel(){return panel;},get godMode(){return view==='recon';}
   };
 })();

@@ -94,7 +94,8 @@ const Satellites = (() => {
 
   // ── TLE Fetch ──────────────────────────────────────────
   async function fetchTLEGroup(group) {
-    const urls = [group.url, CONFIG.proxy + encodeURIComponent(group.url)];
+    const base=typeof window!=='undefined'?(window.GODS_EYE_FEEDS?.apiBase||''):'';
+    const urls=base?[base+'/api/satellites?group='+encodeURIComponent(new URL(group.url).searchParams.get('GROUP')),group.url]:[group.url,CONFIG.proxy+encodeURIComponent(group.url)];
     for (const url of urls) {
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -153,363 +154,31 @@ const Satellites = (() => {
     return satellites.findIndex(s => s.cat === 'iss' && (s.name.includes('ISS') || s.name.includes('ZARYA')));
   }
 
-  // ── Cross/plus pixel marker texture ─────────────────────
-  // Matches the reference screenshot — small bright + shape
-  const crossTexCache = {};
-
-  function makeCrossTex(color, sz = 32) {
-    const key = color + sz;
-    if (crossTexCache[key]) return crossTexCache[key];
-    const cv  = document.createElement('canvas');
-    cv.width  = cv.height = sz;
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, sz, sz);
-    const cx = sz / 2, arm = Math.floor(sz * 0.38), w = Math.max(2, Math.floor(sz * 0.13));
-    ctx.fillStyle = color;
-    // Horizontal bar
-    ctx.fillRect(cx - arm, cx - w/2, arm * 2, w);
-    // Vertical bar
-    ctx.fillRect(cx - w/2, cx - arm, w, arm * 2);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    crossTexCache[key] = tex;
-    return tex;
-  }
-
-  // Label sprite — clean text only, no emoji prefix
-  function makeSatLabelTex(text, color, fontSize = 9) {
-    const cv  = document.createElement('canvas');
-    const ctx = cv.getContext('2d');
-    ctx.font  = `${fontSize}px "Share Tech Mono", monospace`;
-    const tw  = ctx.measureText(text).width;
-    const pad = 3;
-    cv.width  = Math.ceil(tw + pad * 2);
-    cv.height = fontSize + pad * 2;
-    ctx.font  = `${fontSize}px "Share Tech Mono", monospace`;
-    ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.fillStyle = color;
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, pad, cv.height / 2 + 1);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearFilter;
-    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-    const spr = new THREE.Sprite(mat);
-    const h = 0.012;
-    spr.scale.set((cv.width / cv.height) * h, h, 1);
-    return spr;
-  }
-
-  // ── Points geometry — ONE draw call for ALL satellites ──
-  // 25k sprites = 25k draw calls = 3 FPS
-  // 1 Points object = 1 draw call = 60 FPS
-  let pointsGeo   = null;
-  let pointsMesh  = null;
-  let pointsPositions = null;  // Float32Array, 3 floats per sat
-  let pointsColors    = null;  // Float32Array, 3 floats per sat
-  let pointsVisible   = null;  // Uint8Array, 1 byte per sat (0=hide, 1=show)
-
-  // Category colors as RGB 0-1
-  const CAT_RGB = {
-    iss:      [1.0,  0.72, 0.0],   // amber
-    starlink: [0.0,  0.96, 1.0],   // cyan
-    weather:  [0.53, 1.0,  0.8],   // mint
-    nav:      [1.0,  0.8,  0.53],  // gold
-    science:  [0.8,  0.53, 1.0],   // violet
-    iridium:  [0.67, 0.67, 1.0],   // blue
-    debris:   [0.33, 0.33, 0.47],  // grey
-    other:    [0.0,  1.0,  0.53],  // green
-  };
-  const GOD_RGB = [0.0, 1.0, 0.8]; // teal in god mode
-
-  function catRGB(cat, god) {
-    if (god) return GOD_RGB;
-    return CAT_RGB[cat] || CAT_RGB.other;
-  }
-
-  // ── Build Meshes — Points + label sprites ───────────────
-  function buildMeshes(godMode) {
-    Globe.satGroup.clear();
-    Globe.labelGroup.children.filter(c => c.userData.satLabel).forEach(c => Globe.labelGroup.remove(c));
-    Globe.bracketGroup.children.filter(c => !c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-    activeBracket = null;
-    satMeshes = [];   // kept for raycasting — we'll use invisible tiny sprites
-    satLabels = [];
-
-    const n = satellites.length;
-    pointsPositions = new Float32Array(n * 3);
-    pointsColors    = new Float32Array(n * 3);
-    pointsVisible   = new Uint8Array(n).fill(1);
-
-    pointsGeo = new THREE.BufferGeometry();
-    pointsGeo.setAttribute('position', new THREE.BufferAttribute(pointsPositions, 3));
-    pointsGeo.setAttribute('color',    new THREE.BufferAttribute(pointsColors,    3));
-
-    const pointsMat = new THREE.PointsMaterial({
-      size: 3.5,              // screen pixels
-      sizeAttenuation: false, // constant screen size regardless of distance
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.9,
-      depthTest: false,
-    });
-    pointsMesh = new THREE.Points(pointsGeo, pointsMat);
-    Globe.satGroup.add(pointsMesh);
-
-    // Invisible tiny hit-test sprites for raycasting (1 per sat, 0 size effectively)
-    // We only need these for click detection — too small to see
-    satellites.forEach((sat, idx) => {
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, opacity: 0 }));
-      sprite.scale.setScalar(0.015);
-      sprite.userData = { idx, type: 'sat', obj: sat };
-      Globe.satGroup.add(sprite);
-      satMeshes.push(sprite);
-
-      // Init colors
-      const rgb = catRGB(sat.cat, godMode);
-      pointsColors[idx * 3]     = rgb[0];
-      pointsColors[idx * 3 + 1] = rgb[1];
-      pointsColors[idx * 3 + 2] = rgb[2];
-
-      // Label sprite — only ISS gets label always; others only on close zoom
-      const labelText = sat.cat === 'iss' ? 'ISS' : sat.name.length <= 16 ? sat.name : `SAT-${sat.id}`;
-      const lc    = labelColor(sat.cat, godMode);
-      const label = makeSatLabelTex(labelText, lc, sat.cat === 'iss' ? 10 : 8);
-      label.visible = false;
-      label.userData = { idx, satLabel: true };
-      Globe.labelGroup.add(label);
-      satLabels.push(label);
-    });
-
-    pointsGeo.attributes.color.needsUpdate = true;
+  function buildMeshes() {
+    Globe.satGroup.clear(); satMeshes=[]; satLabels=[];
+    satellites.forEach((sat,idx)=>{const anchor=new THREE.Object3D();anchor.userData={idx,type:'sat',obj:sat};Globe.satGroup.add(anchor);satMeshes.push(anchor);});
     applyCatFilter();
   }
-
-  // ── Apply category + isolate filter ────────────────────
-  function applyCatFilter() {
-    if (!pointsGeo) return;
-    const showLabels = Globe.zoom <= LABEL_ZOOM_THRESHOLD;
-
-    satellites.forEach((sat, idx) => {
-      const catVis = catFilter[sat.cat] !== false;
-      const isoVis = !isolateMode || idx === selectedIdx;
-      const vis    = catVis && isoVis ? 1 : 0;
-      pointsVisible[idx] = vis;
-
-      // Update color alpha by zeroing invisible sat colors
-      const rgb = catRGB(sat.cat, false);
-      const bright = idx === selectedIdx ? 1.5 : 1.0;
-      pointsColors[idx * 3]     = vis ? Math.min(1, rgb[0] * bright) : 0;
-      pointsColors[idx * 3 + 1] = vis ? Math.min(1, rgb[1] * bright) : 0;
-      pointsColors[idx * 3 + 2] = vis ? Math.min(1, rgb[2] * bright) : 0;
-
-      // Hit sprite — same vis
-      if (satMeshes[idx]) satMeshes[idx].visible = !!vis;
-
-      if (satLabels[idx]) {
-        satLabels[idx].visible = isolateMode
-          ? idx === selectedIdx
-          : (!!vis && showLabels);
-      }
-    });
-
-    pointsGeo.attributes.color.needsUpdate = true;
+  function applyCatFilter(){satellites.forEach((sat,i)=>{if(satMeshes[i])satMeshes[i].visible=catFilter[sat.cat]!==false && Number.isFinite(sat.lat);});}
+  function setCatFilter(cat,val){catFilter[cat]=val;applyCatFilter();}
+  function updateOne(sat,idx,now){
+    try {
+      const pv=satellite.propagate(sat.satrec,now);if(!pv.position)throw Error('invalid orbit');
+      const geo=satellite.eciToGeodetic(pv.position,satellite.gstime(now));
+      sat.lat=satellite.degreesLat(geo.latitude);sat.lon=satellite.degreesLong(geo.longitude);sat.alt=geo.height;
+      if(!Number.isFinite(sat.lat)||!Number.isFinite(sat.lon)||!Number.isFinite(sat.alt)||sat.alt<0)throw Error('invalid position');
+      sat.vel=pv.velocity?Math.hypot(pv.velocity.x,pv.velocity.y,pv.velocity.z):0;
+      satMeshes[idx]?.position.copy(Utils.ll2v3(sat.lat,sat.lon,1+sat.alt/6371));
+      if(satMeshes[idx])satMeshes[idx].visible=catFilter[sat.cat]!==false;
+    }catch {if(satMeshes[idx])satMeshes[idx].visible=false;}
   }
-
-  function setCatFilter(cat, val) {
-    catFilter[cat] = val;
-    applyCatFilter();
+  function propagate(){const now=new Date();satellites.forEach((s,i)=>updateOne(s,i,now));
+    if(selectedIdx!==null){const s=satellites[selectedIdx];if(s&&Number.isFinite(s.lat)){const h=trailHist[selectedIdx]||=[];h.push({lat:s.lat,lon:s.lon,alt:s.alt});if(h.length>CONFIG.maxTrailPoints)h.shift();}}
   }
-
-  // ── Propagate positions ─────────────────────────────────
-  function propagate(godMode) {
-    if (!pointsGeo) return;
-    const now        = new Date();
-    const showLabels = Globe.zoom <= LABEL_ZOOM_THRESHOLD;
-    const labelScale = Math.max(0.6, Math.min(1.4, 2.3 / Math.max(Globe.zoom, 0.5)));
-
-    satellites.forEach((sat, idx) => {
-      try {
-        const pv = satellite.propagate(sat.satrec, now);
-        if (!pv.position) return;
-        const gmst = satellite.gstime(now);
-        const geo  = satellite.eciToGeodetic(pv.position, gmst);
-        sat.lat = satellite.degreesLat(geo.latitude);
-        sat.lon = satellite.degreesLong(geo.longitude);
-        sat.alt = geo.height;
-        const v = pv.velocity;
-        sat.vel = v ? Math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2) : 0;
-
-        const r   = 1 + (sat.alt / 6371) * 1.4;
-        const pos = Utils.ll2v3(sat.lat, sat.lon, r);
-
-        // Update Points buffer directly — no per-object overhead
-        pointsPositions[idx * 3]     = pos.x;
-        pointsPositions[idx * 3 + 1] = pos.y;
-        pointsPositions[idx * 3 + 2] = pos.z;
-
-        // Update invisible hit sprite position for raycasting
-        if (satMeshes[idx]) satMeshes[idx].position.copy(pos);
-
-        // Label
-        if (satLabels[idx]) {
-          satLabels[idx].position.copy(Utils.ll2v3(sat.lat, sat.lon, r + 0.035));
-          satLabels[idx].visible = isolateMode
-            ? idx === selectedIdx
-            : (catFilter[sat.cat] !== false && showLabels);
-          if (satLabels[idx].visible) {
-            const base = sat.cat === 'iss' ? 0.018 : 0.012;
-            satLabels[idx].scale.setScalar(base * labelScale);
-          }
-        }
-
-        // Keep bracket on selected sat
-        if (activeBracket && activeBracket.userData.idx === idx) {
-          activeBracket.position.copy(pos);
-        }
-
-        if (!trailHist[idx]) trailHist[idx] = [];
-        trailHist[idx].push({ lat: sat.lat, lon: sat.lon, alt: sat.alt });
-        if (trailHist[idx].length > CONFIG.maxTrailPoints) trailHist[idx].shift();
-      } catch (e) {}
-    });
-
-    // Single buffer update for all positions — one GPU upload
-    pointsGeo.attributes.position.needsUpdate = true;
-  }
-
-  // ── Recolor — update Points buffer colors ──────────────
-  function recolor(godMode) {
-    if (!pointsGeo) return;
-    satellites.forEach((sat, idx) => {
-      const rgb = catRGB(sat.cat, godMode);
-      const vis = pointsVisible[idx];
-      pointsColors[idx * 3]     = vis ? rgb[0] : 0;
-      pointsColors[idx * 3 + 1] = vis ? rgb[1] : 0;
-      pointsColors[idx * 3 + 2] = vis ? rgb[2] : 0;
-    });
-    pointsGeo.attributes.color.needsUpdate = true;
-    // Update Points material opacity for god mode
-    if (pointsMesh) pointsMesh.material.opacity = godMode ? 0.7 : 0.9;
-  }
-
-  // ── Trail ──────────────────────────────────────────────
-  function drawTrail(idx, godMode) {
-    Globe.trailGroup.clear();
-    const h = trailHist[idx];
-    if (!h || h.length < 2) return;
-    const pts = h.map(p => Utils.ll2v3(p.lat, p.lon, 1 + (p.alt / 6371) * 1.4));
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineBasicMaterial({
-      color: godMode ? 0x00ffcc : 0xffcc00, transparent: true, opacity: 0.55
-    });
-    Globe.trailGroup.add(new THREE.Line(geo, mat));
-  }
-
-  // ── Bracket reticle ────────────────────────────────────
-  function showBracket(idx, godMode) {
-    Globe.bracketGroup.children.filter(c => !c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-    activeBracket = null;
-    if (idx === null || !satMeshes[idx]) return;
-
-    const color  = godMode ? 0x00ffcc : 0xffb700;
-    const bracket = Globe.makeBracket(0.05, color);
-    bracket.position.copy(satMeshes[idx].position);
-    bracket.userData = { idx };
-    Globe.bracketGroup.add(bracket);
-    activeBracket = bracket;
-
-    let t = 0;
-    const pulse = () => {
-      if (!activeBracket || activeBracket.userData.idx !== idx) return;
-      t += 0.05;
-      activeBracket.scale.setScalar(1 + Math.sin(t) * 0.1);
-      requestAnimationFrame(pulse);
-    };
-    pulse();
-  }
-
-  // ── Select + isolate + zoom ─────────────────────────────
-  function select(idx, godMode) {
-    selectedIdx = idx;
-
-    // Reset all cross sprite sizes first
-    satellites.forEach((_, i) => {
-      if (!satMeshes[i]) return;
-      const s = satellites[i];
-      satMeshes[i].scale.setScalar(
-        s.cat === 'iss' ? 0.022 : s.cat === 'debris' ? 0.004 : 0.009
-      );
-    });
-
-    if (idx === null) {
-      // DESELECT — exit isolate mode, restore all
-      isolateMode = false;
-      Globe.trailGroup.clear();
-      Globe.bracketGroup.children.filter(c => !c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-      activeBracket = null;
-      applyCatFilter();
-      return;
-    }
-
-    // Highlight selected point — make it bright white/yellow
-    if (pointsGeo) {
-      const rgb = catRGB(satellites[idx].cat, false);
-      pointsColors[idx * 3]     = Math.min(1, rgb[0] * 2);
-      pointsColors[idx * 3 + 1] = Math.min(1, rgb[1] * 2);
-      pointsColors[idx * 3 + 2] = Math.min(1, rgb[2] * 2);
-      pointsGeo.attributes.color.needsUpdate = true;
-    }
-
-    // Isolate: hide all others
-    isolateMode = true;
-    applyCatFilter();
-
-    // Force label visible on selected regardless of zoom
-    if (satLabels[idx]) satLabels[idx].visible = true;
-
-    // Keep the Earth in frame when selecting a satellite.
-    Globe.zoom = 3.2;
-    const zlbl = document.getElementById('zlabel');
-    if (zlbl) zlbl.textContent = 'ZOOM: 3.2x';
-
-    // Rotate globe to centre on sat
-    const sat = satellites[idx];
-    if (sat && sat.lat !== undefined) {
-      Globe.rotY = (-sat.lon - 90) * Math.PI / 180;
-      Globe.rotX = -sat.lat * Math.PI / 180 * 0.4;
-      Globe.autoRot = false;
-    }
-
-    showBracket(idx, godMode);
-  }
-
-  // ── Deselect ───────────────────────────────────────────
-  function deselect() {
-    select(null, false);
-    selectedIdx = null;
-  }
-
-  // ── Isolate single satellite — zero all others in Points ─
-  function isolateSingle(idx) {
-    if (!pointsGeo) return;
-    satellites.forEach((sat, i) => {
-      if (i === idx) {
-        // Bright white for selected
-        pointsColors[i * 3]     = 1.0;
-        pointsColors[i * 3 + 1] = 1.0;
-        pointsColors[i * 3 + 2] = 0.8;
-      } else {
-        // Zero = invisible in Points
-        pointsColors[i * 3]     = 0;
-        pointsColors[i * 3 + 1] = 0;
-        pointsColors[i * 3 + 2] = 0;
-      }
-    });
-    pointsGeo.attributes.color.needsUpdate = true;
-  }
+  function animate(){if(selectedIdx!==null&&satellites[selectedIdx])updateOne(satellites[selectedIdx],selectedIdx,new Date());}
+  function select(idx){selectedIdx=idx;isolateMode=false;if(idx!==null&&satMeshes[idx])Globe.track(satMeshes[idx]);}
+  function deselect(){selectedIdx=null;isolateMode=false;}
+  function recolor(){} function drawTrail(){} function showBracket(){} function isolateSingle(){}
 
   // ── Threat counts ──────────────────────────────────────
   function getThreatCounts() {
@@ -532,7 +201,7 @@ const Satellites = (() => {
     get selectedIdx(){ return selectedIdx; },
     get isolateMode(){ return isolateMode; },
     parseTLEs, fetchAll, fetchISSData, getISSIndex,
-    buildMeshes, propagate, recolor, drawTrail, showBracket,
+    buildMeshes, propagate, animate, recolor, drawTrail, showBracket,
     getThreatCounts, select, deselect, applyCatFilter, setCatFilter,
     isolateSingle,
     catColor, catLabel, catClass, catIcon, catMeta,
