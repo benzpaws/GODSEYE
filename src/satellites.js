@@ -470,10 +470,10 @@ const Satellites = (() => {
     // Force label visible on selected regardless of zoom
     if (satLabels[idx]) satLabels[idx].visible = true;
 
-    // Auto-zoom to 2.0
-    Globe.zoom = 2.0;
+    // Keep the Earth in frame when selecting a satellite.
+    Globe.zoom = 3.2;
     const zlbl = document.getElementById('zlabel');
-    if (zlbl) zlbl.textContent = 'ZOOM: 2.0x';
+    if (zlbl) zlbl.textContent = 'ZOOM: 3.2x';
 
     // Rotate globe to centre on sat
     const sat = satellites[idx];

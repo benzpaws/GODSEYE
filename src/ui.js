@@ -111,12 +111,12 @@ const UI = (() => {
 
     if (godMode) {
       btn.classList.add('active');
-      btn.textContent = '☢ GOD VIEW — ACTIVE';
+      btn.textContent = 'God View On';
       document.body.classList.add('godview');
       document.getElementById('god-overlay').classList.add('on');
       document.getElementById('gl-tl').textContent = '⚠ GLOBAL THREAT ASSESSMENT — ACTIVE';
       document.getElementById('gl-br').textContent = 'DEFCON STATUS: ELEVATED';
-      document.getElementById('main-title').innerHTML = 'GODS<em> EYE</em> // <span style="color:#00ffcc;text-shadow:0 0 18px rgba(0,255,204,.8)">GOD VIEW — WAR MODE</span>';
+      document.getElementById('main-title').innerHTML = 'GODS <em>EYE</em>';
       document.getElementById('ftr-label').textContent = 'GODS EYE v5.2 // GOD VIEW ACTIVE // ALL OBJECTS FLAGGED AS THREATS';
       document.getElementById('rph-label').textContent = '// THREAT TELEMETRY';
       document.getElementById('panel-label').textContent = '// THREAT OBJECTS';
@@ -128,15 +128,15 @@ const UI = (() => {
       drawTargets();
     } else {
       btn.classList.remove('active');
-      btn.textContent = '☠ GOD VIEW';
+      btn.textContent = 'God View';
       document.body.classList.remove('godview');
       document.getElementById('god-overlay').classList.remove('on');
-      document.getElementById('gl-tl').textContent = 'GLOBAL SURVEILLANCE NETWORK';
-      document.getElementById('gl-br').textContent = 'SRC: CELESTRAK · OPENSKY · ADS-B';
-      document.getElementById('main-title').innerHTML = 'GODS<em> EYE</em> // WORLDVIEW OPERATIONS CENTER';
+      document.getElementById('gl-tl').textContent = 'WORLD VIEW / PUBLIC DATA';
+      document.getElementById('gl-br').textContent = 'CELESTRAK / OPENSKY';
+      document.getElementById('main-title').innerHTML = 'GODS <em>EYE</em>';
       document.getElementById('ftr-label').textContent = 'GODS EYE v5.2 // UNCLASSIFIED // PUBLIC DATA ONLY';
-      document.getElementById('rph-label').textContent = '// OBJECT TELEMETRY';
-      document.getElementById('panel-label').textContent = '// TRACKED OBJECTS';
+      document.getElementById('rph-label').textContent = 'TELEMETRY';
+      document.getElementById('panel-label').textContent = 'OBJECTS';
       Globe.exitGodView();
       Satellites.recolor(false);
       Aircraft.recolor(false);
@@ -205,7 +205,7 @@ const UI = (() => {
           ${[1,2,3,4,5].map(n => `<div class="gd-defcon-light ${n >= 3 ? 'gd-defcon-active' : ''}">${n}</div>`).join('')}
         </div>
       </div>
-      <div class="gd-ticker"><span class="gd-ticker-label">SYS</span><span class="gd-ticker-msg">ALL TRACKING SYSTEMS NOMINAL · ORBITAL PROPAGATION ACTIVE · ADS-B FEED LIVE · TLE UPDATE PENDING</span></div>`;
+      <div class="gd-ticker"><span class="gd-ticker-label">DATA</span><span class="gd-ticker-msg">PUBLIC SOURCE POSITIONS · COVERAGE AND REFRESH TIMES VARY BY PROVIDER</span></div>`;
   }
 
   // ── DATA LAYERS panel ────────────────────────────────────
@@ -236,11 +236,11 @@ const UI = (() => {
         <div class="dl-count">${layerAir ? acCount : '—'}</div>
         <div class="dl-toggle ${layerAir ? 'on' : 'off'}">${layerAir ? 'ON' : 'OFF'}</div>
       </div>
-      <div class="dl-row ${layerAir ? 'on' : 'dim'}" onclick="UI.toggleMilitary()" title="Military flights via ADS-B Exchange">
+      <div class="dl-row ${layerAir ? 'on' : 'dim'}" onclick="UI.toggleMilitary()" title="Filter possible military aircraft by callsign">
         <div class="dl-icon">🪖</div>
         <div class="dl-info">
-          <div class="dl-name">Military Flights</div>
-          <div class="dl-src">ADS-B Exchange · prefix detect</div>
+          <div class="dl-name">Possible military</div>
+          <div class="dl-src">OpenSky hints · optional ADS-B feed</div>
         </div>
         <div class="dl-count">${layerAir ? milCount : '—'}</div>
         <div class="dl-toggle ${layerAir && milCount > 0 ? 'on' : 'off'}">${layerAir && milCount > 0 ? 'ON' : 'OFF'}</div>
@@ -450,10 +450,10 @@ const UI = (() => {
     Globe.trailGroup.clear();
     Globe.autoRot = true;
     // Reset zoom back to default when untracking
-    Globe.zoom = 3.6;
+    Globe.zoom = 3.2;
     // Reset right panel
-    document.getElementById('dname').innerHTML = '<span style="color:var(--cd);font-size:9px;letter-spacing:2px;opacity:.5">AWAITING TARGET LOCK</span>';
-    document.getElementById('dbody').innerHTML = '<div class="nosel">&gt; SELECT OBJECT FROM LIST<br>&gt; OR CLICK ICON ON GLOBE<br>&gt; DRAG TO ROTATE · SCROLL TO ZOOM<br>&gt; <kbd style="border:1px solid var(--bo);padding:1px 5px;font-size:8px">ESC</kbd> TO UNTRACK</div>';
+    document.getElementById('dname').textContent = 'Object details';
+    document.getElementById('dbody').innerHTML = '<div class="empty-state"><div class="empty-state-symbol">◎</div><h2>Explore the world</h2><p>Select a satellite or aircraft to inspect its reported position, source, and available telemetry.</p><div class="empty-state-tip">Drag to rotate the Earth · Scroll to zoom · Select an object to see details.</div></div>';
     document.getElementById('poslabel').textContent = 'LAT: -- LON: --';
     hideUntrackBtn();
     if (typeof TrackBracket !== 'undefined') TrackBracket.hide();
@@ -557,8 +557,8 @@ const UI = (() => {
     buildList();
     Aircraft.showBracket(idx, godMode);
     Globe.bracketGroup.children.filter(c => !c.userData.airBracket).forEach(c => Globe.bracketGroup.remove(c));
-    // Auto-zoom to 2.0 and centre
-    Globe.zoom = 2.0;
+    // Keep context around the selected aircraft.
+    Globe.zoom = 3.2;
     const ac = Aircraft.list[idx];
     if (ac && ac.lat != null) {
       Globe.rotY = (-ac.lon - 90) * Math.PI / 180;

@@ -14,7 +14,7 @@ const Globe = (() => {
   let sunLight, ambLight;
 
   let drag = false, prevM = { x: 0, y: 0 };
-  let rotX = 0.3, rotY = 0, zoom = 3.6, autoRot = true;
+  let rotX = 0.3, rotY = 0, zoom = 3.2, autoRot = true;
   let frame = 0;
 
   const canvas = document.getElementById('gc');
@@ -55,6 +55,10 @@ const Globe = (() => {
     createClickBlocker();
     geoGrid  = createGeoGrid();
     flagGroup = createFlagMarkers();
+    // Keep contextual overlays available, but let the Earth and tracked
+    // objects carry the default view without covering it in tiny labels.
+    geoGrid.visible = false;
+    flagGroup.visible = false;
     setupControls();
   }
 
