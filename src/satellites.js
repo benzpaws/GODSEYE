@@ -94,7 +94,7 @@ const Satellites = (() => {
 
   // ── TLE Fetch ──────────────────────────────────────────
   async function fetchTLEGroup(group) {
-    const urls = [CONFIG.proxy + encodeURIComponent(group.url), group.url];
+    const urls = [group.url, CONFIG.proxy + encodeURIComponent(group.url)];
     for (const url of urls) {
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -129,16 +129,8 @@ const Satellites = (() => {
     });
 
     if (allSats.length < 5) {
-      allSats = parseTLEs(CONFIG.fallbackTLE, 'other');
-      allSats.forEach(s => {
-        const n = s.name.toUpperCase();
-        if (n.includes('ISS') || n.includes('ZARYA'))     s.cat = 'iss';
-        else if (n.includes('STARLINK'))                  s.cat = 'starlink';
-        else if (n.includes('NOAA')||n.includes('GOES'))  s.cat = 'weather';
-        else if (n.includes('GPS')||n.includes('GLONASS'))s.cat = 'nav';
-        else s.cat = 'science';
-      });
-      return { sats: allSats, fallback: true };
+      // Bundled sample elements are years old and cannot represent today's positions.
+      return { sats: [], fallback: true };
     }
     return { sats: allSats, fallback: false };
   }

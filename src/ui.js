@@ -406,12 +406,12 @@ const UI = (() => {
       const div   = document.createElement('div');
       div.className = 'sitem' + (isSel ? ' sel' : '') + (obj.military ? ' mil' : '');
 
-      const milBadge = obj.military ? '<span class="mil-badge">🪖 MIL</span>' : '';
+      const milBadge = obj.military ? '<span class="mil-badge">🪖 POSSIBLE MIL</span>' : '';
       div.innerHTML = `
         <div class="sitem-icon">${obj._type === 'air' ? (obj.military ? '🪖' : '✈️') : meta.icon}</div>
         <div class="sitem-info">
-          <div class="sname">${obj.name}${milBadge}</div>
-          <div class="sid">${obj._type === 'sat' ? 'NORAD:' + obj.id : 'ICAO:' + obj.id}${obj.country ? ' · ' + obj.country : ''}</div>
+          <div class="sname">${Utils.escapeHTML(obj.name)}${milBadge}</div>
+          <div class="sid">${Utils.escapeHTML(obj._type === 'sat' ? 'NORAD:' + obj.id : 'ICAO:' + obj.id)}${obj.country ? ' · ' + Utils.escapeHTML(obj.country) : ''}</div>
         </div>
         <div class="cbadge ${meta.cssClass}">${meta.label}</div>`;
       div.addEventListener('click', () => { obj._type === 'sat' ? selectSat(obj._idx) : selectAir(obj._idx); });
@@ -470,7 +470,7 @@ const UI = (() => {
       btn.onclick = () => deselect();
       document.getElementById('gw').appendChild(btn);
     }
-    btn.innerHTML = `✕ UNTRACK ${name}`;
+    btn.textContent = `✕ UNTRACK ${name}`;
     btn.style.cssText = `
       position:absolute; bottom:40px; left:50%; transform:translateX(-50%);
       font-family:var(--fd); font-size:8px; letter-spacing:2px;
@@ -534,7 +534,7 @@ const UI = (() => {
       <div class="dblock">
         <div class="dbtitle">// CREW MANIFEST — ${crew.length > 0 ? crew.length + ' PERSONNEL ABOARD' : 'DATA UNAVAILABLE'}</div>
         ${crew.length > 0
-          ? crew.map(p => `<div class="iss-crew-row"><span class="iss-crew-icon">👨‍🚀</span><span class="iss-crew-name">${p.name}</span><span class="iss-crew-craft">ISS</span></div>`).join('')
+          ? crew.map(p => `<div class="iss-crew-row"><span class="iss-crew-icon">👨‍🚀</span><span class="iss-crew-name">${Utils.escapeHTML(p.name)}</span><span class="iss-crew-craft">ISS</span></div>`).join('')
           : '<div class="iss-crew-row"><span class="iss-crew-name" style="opacity:.4">CREW DATA OFFLINE — OPEN-NOTIFY UNAVAILABLE</span></div>'}
       </div>
       <div id="mmc"><div class="dbtitle">// GROUND TRACK</div><canvas id="mmcanvas" width="264" height="110"></canvas></div>
@@ -576,8 +576,8 @@ const UI = (() => {
   }
 
   function _airNameHTML(ac, cs) {
-    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 MILITARY</span>' : '';
-    return `<div class="ac-header"><div class="ac-callsign">${cs}${milTag}</div><div class="ac-airline ac-airline-loading">FETCHING ROUTE...</div></div>`;
+    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 POSSIBLE MILITARY</span>' : '';
+    return `<div class="ac-header"><div class="ac-callsign">${Utils.escapeHTML(cs)}${milTag}</div><div class="ac-airline ac-airline-loading">FETCHING ROUTE...</div></div>`;
   }
 
   function _airBasicHTML(ac, cs) {
@@ -587,8 +587,8 @@ const UI = (() => {
     const velKmh= ac.velocity ? Math.round(ac.velocity * 3.6) : null;
     return `
       <div class="dossier-header">
-        <div class="dossier-classification">${ac.military ? 'MILITARY · ADS-B EXCHANGE' : 'CIVIL · OPENSKY NETWORK'}</div>
-        <div class="dossier-id">ICAO: ${ac.icao24 || '---'} · SQUAWK: ${ac.squawk || '---'}</div>
+        <div class="dossier-classification">${airProvenance(ac)}</div>
+        <div class="dossier-id">ICAO: ${Utils.escapeHTML(ac.icao24 || '---')} · SQUAWK: ${Utils.escapeHTML(ac.squawk || '---')}</div>
       </div>
       <div class="ac-route-block ac-skeleton">
         <div class="ac-airports">
@@ -607,7 +607,11 @@ const UI = (() => {
     const altFt = Math.round(altM * 3.28084);
     const velKts= ac.velocity ? Math.round(ac.velocity * 1.944) : null;
     const velKmh= ac.velocity ? Math.round(ac.velocity * 3.6) : null;
-    const fmt = iso => { try { return new Date(iso).toUTCString().slice(17,22) + ' UTC'; } catch { return '---'; } };
+    const fmt = iso => {
+      if (!iso) return '---';
+      const d = new Date(iso);
+      return Number.isFinite(d.getTime()) ? d.toUTCString().slice(17, 22) + ' UTC' : '---';
+    };
     const depIata = r?.dep.iata || '???', depCity = (r?.dep.airport || 'UNKNOWN').split(' ')[0];
     const arrIata = r?.arr.iata || '???', arrCity = (r?.arr.airport || 'UNKNOWN').split(' ')[0];
     const airline = r?.airline || ac.origin_country || '---';
@@ -616,21 +620,22 @@ const UI = (() => {
     let pct = 50;
     if (r?.dep.scheduled && r?.arr.scheduled) {
       const d = new Date(r.dep.scheduled).getTime(), a = new Date(r.arr.scheduled).getTime(), now = Date.now();
-      pct = Math.max(5, Math.min(95, ((now - d) / (a - d)) * 100));
+      if (Number.isFinite(d) && Number.isFinite(a) && a > d)
+        pct = Math.max(5, Math.min(95, ((now - d) / (a - d)) * 100));
     }
-    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 MILITARY</span>' : '';
+    const milTag = ac.military ? '<span class="dossier-mil-tag">🪖 POSSIBLE MILITARY</span>' : '';
 
-    document.getElementById('dname').innerHTML = `<div class="ac-header"><div class="ac-callsign">${cs}${milTag}</div><div class="ac-airline">${airline}</div></div>`;
+    document.getElementById('dname').innerHTML = `<div class="ac-header"><div class="ac-callsign">${Utils.escapeHTML(cs)}${milTag}</div><div class="ac-airline">${Utils.escapeHTML(airline)}</div></div>`;
     document.getElementById('dbody').innerHTML = `
       <div class="dossier-header">
-        <div class="dossier-classification">${ac.military ? 'MILITARY · ADS-B EXCHANGE' : 'CIVIL · OPENSKY NETWORK'}</div>
-        <div class="dossier-id">ICAO: ${ac.icao24 || '---'} · ${acType} · ${reg}</div>
+        <div class="dossier-classification">${airProvenance(ac)}</div>
+        <div class="dossier-id">ICAO: ${Utils.escapeHTML(ac.icao24 || '---')} · ${Utils.escapeHTML(acType)} · ${Utils.escapeHTML(reg)}</div>
       </div>
       <div class="ac-route-block">
         <div class="ac-airports">
-          <div class="ac-airport"><div class="ac-iata">${depIata}</div><div class="ac-city">${depCity.toUpperCase()}</div></div>
+          <div class="ac-airport"><div class="ac-iata">${Utils.escapeHTML(depIata)}</div><div class="ac-city">${Utils.escapeHTML(depCity.toUpperCase())}</div></div>
           <div class="ac-route-arrow">✈</div>
-          <div class="ac-airport ac-airport-right"><div class="ac-iata">${arrIata}</div><div class="ac-city">${arrCity.toUpperCase()}</div></div>
+          <div class="ac-airport ac-airport-right"><div class="ac-iata">${Utils.escapeHTML(arrIata)}</div><div class="ac-city">${Utils.escapeHTML(arrCity.toUpperCase())}</div></div>
         </div>
         <div class="ac-progress-wrap">
           <div class="ac-progress-track">
@@ -660,7 +665,8 @@ const UI = (() => {
     const squawkNote  = ac.squawk === '7700' ? ' ⚠ EMERGENCY' : ac.squawk === '7500' ? ' ⚠ HIJACK' : ac.squawk === '7600' ? ' ⚠ COMMS FAIL' : '';
     return `
       <div class="dblock">
-        <div class="dbtitle">// LIVE POSITION</div>
+        <div class="dbtitle">// REPORTED POSITION</div>
+        <div class="drow"><span class="dl">OBSERVED (UTC)</span><span class="dv">${ac.time_position ? new Date(ac.time_position * 1000).toISOString().replace('T', ' ').slice(0, 19) : '---'}</span></div>
         <div class="drow"><span class="dl">LATITUDE</span><span class="dv">${lat}</span></div>
         <div class="drow"><span class="dl">LONGITUDE</span><span class="dv">${lon}</span></div>
         <div class="drow"><span class="dl">ALTITUDE</span><span class="dv amb">${altM ? Math.round(altM) + ' m' : '---'}</span></div>
@@ -668,21 +674,38 @@ const UI = (() => {
         <div class="drow"><span class="dl">ALT (ft)</span><span class="dv">${altFt ? altFt.toLocaleString() + ' ft' : '---'}</span></div>
       </div>
       <div class="dblock">
-        <div class="dbtitle">// LIVE TELEMETRY</div>
+        <div class="dbtitle">// REPORTED TELEMETRY</div>
         <div class="drow"><span class="dl">SPEED</span><span class="dv">${velKmh ? velKmh + ' km/h' : '---'}</span></div>
         <div class="drow"><span class="dl">SPEED (kts)</span><span class="dv">${velKts ? velKts + ' kts' : '---'}</span></div>
         <div class="drow"><span class="dl">HEADING</span><span class="dv">${ac.true_track ? ac.true_track.toFixed(1) + '°' : '---'}</span></div>
         <div class="drow"><span class="dl">VERT RATE</span><span class="dv">${ac.vertical_rate ? (ac.vertical_rate > 0 ? '▲ ' : '▼ ') + Math.abs(ac.vertical_rate).toFixed(1) + ' m/s' : '---'}</span></div>
-        <div class="drow"><span class="dl">SQUAWK</span><span class="dv ${squawkClass}">${ac.squawk || '---'}${squawkNote}</span></div>
+        <div class="drow"><span class="dl">SQUAWK</span><span class="dv ${squawkClass}">${Utils.escapeHTML(ac.squawk || '---')}${squawkNote}</span></div>
         <div class="drow"><span class="dl">ON GROUND</span><span class="dv ${ac.on_ground ? 'amb' : 'blu'}">${ac.on_ground ? '▣ GROUND' : '▲ AIRBORNE'}</span></div>
       </div>
       <div class="dblock">
         <div class="dbtitle">// IDENTIFICATION</div>
-        <div class="drow"><span class="dl">ICAO24</span><span class="dv">${ac.icao24 || '---'}</span></div>
-        <div class="drow"><span class="dl">COUNTRY</span><span class="dv">${ac.origin_country || '---'}</span></div>
-        <div class="drow"><span class="dl">MILITARY</span><span class="dv ${ac.military ? 'teal' : 'blu'}">${ac.military ? '🪖 YES — FLAGGED' : 'NO'}</span></div>
+        <div class="drow"><span class="dl">ICAO24</span><span class="dv">${Utils.escapeHTML(ac.icao24 || '---')}</span></div>
+        <div class="drow"><span class="dl">COUNTRY</span><span class="dv">${Utils.escapeHTML(ac.origin_country || '---')}</span></div>
+        <div class="drow"><span class="dl">CLASSIFICATION</span><span class="dv ${ac.military ? 'teal' : 'blu'}">${ac.classification === 'provider military feed' ? 'PROVIDER MILITARY' : ac.classification === 'callsign hint' ? 'POSSIBLE · CALLSIGN HINT' : 'UNVERIFIED'}</span></div>
         <div class="drow"><span class="dl">SOURCE</span><span class="dv" style="font-size:8px">${ac.source === 'adsbx' ? 'ADS-B EXCHANGE' : 'OPENSKY NETWORK'}</span></div>
       </div>`;
+  }
+
+  function airProvenance(ac) {
+    return ac.classification === 'provider military feed'
+      ? `PROVIDER MILITARY · ${ac.source === 'adsbx' ? 'ADS-B EXCHANGE POSITION' : 'OPENSKY POSITION'}`
+      : ac.classification === 'callsign hint' ? 'POSSIBLE MILITARY · CALLSIGN HINT · OPENSKY'
+      : 'AIRCRAFT · OPENSKY NETWORK';
+  }
+
+  function refreshSelectedAir() {
+    if (selectedType !== 'air' || selectedIdx === null) return;
+    const ac = Aircraft.list[selectedIdx];
+    if (!ac) { deselect(); return; }
+    const cs = (ac.callsign || 'UNKNOWN').trim();
+    document.getElementById('dname').innerHTML = _airNameHTML(ac, cs);
+    document.getElementById('dbody').innerHTML = _airBasicHTML(ac, cs);
+    _renderAirFull(ac, cs, ac.route);
   }
 
   // ── Satellite Detail (Palantir dossier style) ─────────────
@@ -709,18 +732,19 @@ const UI = (() => {
     document.getElementById('dname').innerHTML = `
       <div class="sat-header">
         <span class="sat-header-icon">${meta.icon}</span>
-        <span class="sat-header-name">${sat.name.length > 20 ? 'SAT-' + sat.id : sat.name}</span>
+        <span class="sat-header-name">${Utils.escapeHTML(sat.name.length > 20 ? 'SAT-' + sat.id : sat.name)}</span>
       </div>`;
 
     document.getElementById('dbody').innerHTML = `
       <div class="dossier-header">
-        <div class="dossier-classification">${godMode ? 'TOP SECRET // SI-TK // NOFORN' : 'UNCLASSIFIED // PUBLIC DATA // CELESTRAK'}</div>
-        <div class="dossier-id">NORAD ${sat.id} · ${sat.name}</div>
+        <div class="dossier-classification">CELESTRAK ELEMENTS · SGP4 PROPAGATION</div>
+        <div class="dossier-id">NORAD ${sat.id} · ${Utils.escapeHTML(sat.name)}</div>
       </div>
       <div class="sat-purpose-badge">${meta.icon} ${meta.purpose}</div>
 
       <div class="dblock">
-        <div class="dbtitle">${godMode ? '// THREAT POSITION' : '// LIVE POSITION'}</div>
+        <div class="dbtitle">// CALCULATED POSITION (UTC)</div>
+        <div class="drow"><span class="dl">ELEMENT EPOCH</span><span class="dv">${sat.satrec ? new Date(Date.UTC(sat.satrec.epochyr >= 57 ? 1900 + sat.satrec.epochyr : 2000 + sat.satrec.epochyr, 0, 1) + (sat.satrec.epochdays - 1) * 86400000).toISOString().slice(0, 16).replace('T', ' ') : '---'}</span></div>
         <div class="drow"><span class="dl">LATITUDE</span><span class="dv">${lat.toFixed(4)}°</span></div>
         <div class="drow"><span class="dl">LONGITUDE</span><span class="dv">${lon.toFixed(4)}°</span></div>
         <div class="drow"><span class="dl">ALTITUDE</span><span class="dv amb">${alt.toFixed(1)} km</span></div>
@@ -743,7 +767,7 @@ const UI = (() => {
       <div class="dblock">
         <div class="dbtitle">// IDENTIFICATION</div>
         <div class="drow"><span class="dl">NORAD ID</span><span class="dv">${sat.id}</span></div>
-        <div class="drow"><span class="dl">FULL NAME</span><span class="dv" style="font-size:8px;letter-spacing:.5px">${sat.name}</span></div>
+        <div class="drow"><span class="dl">FULL NAME</span><span class="dv" style="font-size:8px;letter-spacing:.5px">${Utils.escapeHTML(sat.name)}</span></div>
         <div class="drow"><span class="dl">CATEGORY</span><span class="dv">${meta.label}</span></div>
         <div class="drow"><span class="dl">PURPOSE</span><span class="dv" style="font-size:8px">${meta.purpose}</span></div>
         <div class="drow"><span class="dl">EPOCH YEAR</span><span class="dv">${launchYr}</span></div>
@@ -756,8 +780,8 @@ const UI = (() => {
       </div>
       <div id="tleblock">
         <div class="dbtitle">// TLE ELEMENTS</div>
-        <div class="tleline">${sat.tle1 || '---'}</div>
-        <div class="tleline" style="margin-top:4px">${sat.tle2 || '---'}</div>
+        <div class="tleline">${Utils.escapeHTML(sat.tle1 || '---')}</div>
+        <div class="tleline" style="margin-top:4px">${Utils.escapeHTML(sat.tle2 || '---')}</div>
       </div>`;
 
     drawMiniMap(sat);
@@ -839,7 +863,7 @@ const UI = (() => {
   return {
     initTargeting, initRaycast, toggleGodView, toggleLayer, toggleMilitary, toggleRadar,
     buildList, buildDataLayers, buildCatFilterPanel, toggleCatFilter,
-    selectSat, selectAir, updateDetail, updateThreatCounts, renderGodDashboard,
+    selectSat, selectAir, updateDetail, refreshSelectedAir, updateThreatCounts, renderGodDashboard,
     setSearchQuery, setFilterType, setFilterCountry, deselect,
     get godMode()     { return godMode; },
     get selectedIdx() { return selectedIdx; },

@@ -1,141 +1,35 @@
-# GODS EYE // WORLDVIEW OPERATIONS CENTER
+# GODS EYE // Worldview Operations Center
 
-A military-grade tactical globe web app that tracks live satellites, aircraft, and renders a 3D Earth with real-time day/night cycle. Built with vanilla JS, Three.js, and satellite.js.
+A browser-based 3D globe and proximity radar built with vanilla JavaScript, Three.js and satellite.js. It displays public orbital elements from CelesTrak and aircraft position reports from OpenSky when those sources are reachable. The repository is a prototype being developed into a dependable public-data viewer.
 
-![GODS EYE](https://img.shields.io/badge/STATUS-OPERATIONAL-00ff41?style=flat-square&labelColor=000)
-![Version](https://img.shields.io/badge/VERSION-4.0.0-ffaa00?style=flat-square&labelColor=000)
+## What the positions mean
 
-## FEATURES
+- **Aircraft:** OpenSky reports observations, not guaranteed current or complete coverage. The app accepts positions observed within the last 120 seconds and shows the observation time in UTC. When a refresh fails, the desktop view removes the previous aircraft snapshot instead of presenting it as live. The mobile view refreshes aircraft every 60 seconds and filters stale reports.
+- **Satellites:** SGP4 estimates positions from CelesTrak orbital elements. These are calculations, not direct live measurements. The desktop dossier displays the element epoch. If the catalog cannot be fetched, the app shows satellites offline; the bundled old sample elements are not used as current positions.
+- **Military:** The optional ADS-B Exchange feed requires a separately configured key and browser access permitted by that provider. Without that feed, callsign matches are hints only; the UI labels them as possible. An absent match does not establish that an aircraft is civilian.
+- **Radar:** Aircraft contacts are filtered to recent observations. A satellite in the radar's circle has a nearby ground projection; the display does not establish direct visibility above the horizon.
 
-### Core Systems
-- **10,000+ satellites** tracked live from CelesTrak (10 TLE groups)
-- **SGP4 orbital propagation** via satellite.js
-- **OpenSky aircraft integration** (1,000 object cap, 60s refresh)
-- **Day/Night Earth shader** — real NASA Blue Marble + City Lights textures
-- **Cloud layer** with slow rotational drift
-- **Atmospheric glow** — blue limb Fresnel shader
-- **Click-to-select** with full telemetry panel
-- **Orbital trail history** (80 points per satellite)
-- **Mini 2D ground track map**
-- **Search by designation**
+There is currently no authoritative historical tracking, comprehensive worldwide aircraft coverage, provider redundancy or dependable offline cache. Some layers depend on third-party CORS behavior and a public proxy. The project does not infer positions excluded from public feeds.
 
-### GOD VIEW — War Mode
-- Full red war theme transition
-- Earth disappears, replaced by red wireframe void
-- Targeting canvas overlay with animated rings
-- Red sweep line animation
-- Threat counter panel (LEO/MEO/GEO classification)
-- All objects reclassified as threats
+## Run locally
 
-### GOD CLOCK
-- 22 world timezones in a 2-column grid
-- Live updating every second
-- Day/night indicator per timezone
-- Personal zones highlighted (Toronto, Tbilisi, Tallinn)
+Serve the repository from a local HTTP server, for example `python3 -m http.server 8000`, then open `http://localhost:8000/`. GitHub Pages serves the same static files. The desktop page is `app.html`; the mobile radar is `mobile.html`.
 
-### PROXIMITY RADAR
-- 50km radius scan around your location
-- Uses browser geolocation API
-- Animated sweep with blip detection
-- Detects both satellites overhead and aircraft nearby
-- Contact list with distance, bearing, altitude
-- Click contacts to select them on the globe
+The login is a **public cinematic UI gate**, with published demo credentials `Benzpaws` / `Benzpaws9`. A client-side hash and localStorage session do not protect the source or data. Do not put secrets in any file deployed to GitHub Pages.
 
-### Visual Modes
-- **NVG** — Night vision green filter
-- **FLIR** — Thermal imaging filter
-- **CRT scanlines** + vignette overlay
+To try optional integrations on a private local deployment, copy `src/config.local.example.js` to `src/config.local.js` and edit the copy. That file is ignored by Git, but if you publish it with a static site its contents become public. Optional API credentials are not required for the core free-data experience. Never send a key through a public CORS proxy.
 
-### Authentication
-- SHA-256 hashed client-side login
-- 24-hour session persistence
-- Configurable credentials
+## Data and dependencies
 
-## DEPLOYMENT (GitHub Pages)
+- CelesTrak GP data (TLE format) for satellite elements; satellite.js 4.1.4 for propagation.
+- OpenSky Network states for aircraft positions; a third-party CORS proxy is currently used for browser requests. Provider availability and usage policies apply.
+- Optional ADS-B Exchange and AviationStack integrations require your own credentials and compatible browser access; these are not core dependencies.
+- Three.js r128 and satellite.js load from public CDNs. Earth imagery loads from externally hosted sources.
 
-```bash
-# 1. Create repo on GitHub
-git init
-git remote add origin https://github.com/YOUR_USERNAME/godseye.git
+The interface includes search, selection, telemetry, orbit trails, world clock, radar, visual filters and a mobile-specific view. Desktop and mobile do not yet have feature parity.
 
-# 2. Push
-git add .
-git commit -m "GODS EYE v4.0"
-git push -u origin main
+## Security and contribution status
 
-# 3. Enable GitHub Pages
-# Settings → Pages → Branch: main → / (root) → Save
+An API key was previously committed in `src/config.local.js`. Its owner must revoke and replace it; deleting the file in a later commit does not erase Git history. Client-side integrations cannot keep API keys secret.
 
-# 4. Access at: https://YOUR_USERNAME.github.io/godseye/
-```
-
-## CHANGING LOGIN CREDENTIALS
-
-1. Open browser console
-2. Generate hashes:
-
-```javascript
-async function hash(str) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-// Generate your hashes:
-hash('your_username').then(console.log);  // Copy this
-hash('your_password').then(console.log);  // Copy this
-```
-
-3. Edit `src/config.js` → `auth.credentials`:
-```javascript
-credentials: {
-  usernameHash: 'YOUR_USERNAME_HASH_HERE',
-  passwordHash: 'YOUR_PASSWORD_HASH_HERE',
-}
-```
-
-### Default Credentials
-- **Username:** `Benzpaws`
-- **Password:** `Benzpaws9`
-
-## REPO STRUCTURE
-
-```
-godseye/
-├── index.html          ← Login page (entry point)
-├── app.html            ← Main dashboard (auth-gated)
-├── css/
-│   ├── login.css       ← Login page styles
-│   └── app.css         ← Dashboard styles
-├── src/
-│   ├── config.js       ← API keys, constants, TLE groups
-│   ├── auth.js         ← SHA-256 authentication module
-│   ├── utils.js        ← Shared utility functions
-│   ├── globe.js        ← Three.js earth, day/night, atmosphere
-│   ├── satellites.js   ← TLE fetch, SGP4 propagation
-│   ├── aircraft.js     ← OpenSky Network integration
-│   ├── godclock.js     ← World timezone panel
-│   ├── radar.js        ← 50km proximity radar
-│   └── ui.js           ← UI management, raycasting, panels
-└── README.md
-```
-
-## DATA SOURCES
-
-| Source | Data | Cost | Auth |
-|--------|------|------|------|
-| CelesTrak | Satellite TLEs | Free | None |
-| OpenSky Network | Live aircraft | Free | None (public API) |
-| NASA | Earth textures | Free | Public domain |
-
-## TECH STACK
-
-- **Three.js** r128 — 3D globe rendering
-- **satellite.js** 4.1.4 — SGP4 orbital propagation
-- **Vanilla JS** — No frameworks, no build step
-- **GitHub Pages** — Static hosting, zero cost
-
-## LICENSE
-
-Public data only. Not affiliated with any military or government organization.
-Satellite and aircraft data sourced from public APIs.
-NASA textures are public domain.
+The source is publicly viewable, but no open-source license has been selected yet. Please obtain the owner's license decision before redistributing or accepting outside contributions.

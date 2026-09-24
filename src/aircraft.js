@@ -32,16 +32,17 @@ const Aircraft = (() => {
     'MEDIC','HOSP','EVAC','MEDEVAC','CASEVAC','LOGAIR','SEALIFT',
   ]);
 
-  // Known military ICAO24 hex prefixes (first 2 chars of 6-char hex)
-  const MIL_ICAO_PREFIXES = ['ae', 'a9', '3e', '43', '44', '45', '46', '47', '48'];
-
   function isMilitary(ac) {
     if (!ac) return false;
     const cs = (ac.callsign || '').trim().toUpperCase();
-    const icao = (ac.icao24 || '').toLowerCase();
-    if (MIL_PREFIXES.some(p => cs.startsWith(p))) return true;
-    if (MIL_ICAO_PREFIXES.some(p => icao.startsWith(p))) return true;
-    return false;
+    // Callsigns are only hints. Country-wide ICAO prefixes cannot establish
+    // whether a specific aircraft is military.
+    return MIL_PREFIXES.some(p => cs.startsWith(p));
+  }
+
+  function freshPosition(timestamp, nowSeconds = Date.now() / 1000) {
+    return Number.isFinite(timestamp) && timestamp > 0 &&
+      timestamp <= nowSeconds + 30 && nowSeconds - timestamp <= CONFIG.aircraftMaxAgeSeconds;
   }
 
   // ── OpenSky Fetch ────────────────────────────────────────
@@ -52,38 +53,55 @@ const Aircraft = (() => {
       const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
       if (!res.ok) throw new Error('OpenSky ' + res.status);
       const data = await res.json();
-      aircraft = (data.states || [])
-        .filter(s => s[6] != null && s[5] != null)
+      if (!data || !Array.isArray(data.states)) throw new Error('Invalid OpenSky response');
+      const nowSeconds = Date.now() / 1000;
+      const next = data.states
+        .filter(s => Array.isArray(s) && Number.isFinite(s[6]) && Number.isFinite(s[5]) &&
+          Math.abs(s[6]) <= 90 && Math.abs(s[5]) <= 180 && freshPosition(s[3], nowSeconds))
         .slice(0, CONFIG.maxAircraft)
         .map(s => ({
           icao24: s[0], callsign: s[1]?.trim(), origin_country: s[2],
           lon: s[5], lat: s[6], baro_altitude: s[7], on_ground: s[8],
           velocity: s[9], true_track: s[10], vertical_rate: s[11],
           geo_altitude: s[13], squawk: s[14],
+          time_position: s[3], last_contact: s[4],
           route: routeCache[s[1]?.trim()] || null,
-          military: false, // military flag — set by detectMilitary or ADS-B
+          military: false,
+          classification: 'unverified',
           source: 'opensky',
         }));
 
-      // Flag military from OpenSky
-      aircraft.forEach(ac => { ac.military = isMilitary(ac); });
+      next.forEach(ac => {
+        if (isMilitary(ac)) { ac.military = true; ac.classification = 'callsign hint'; }
+      });
+      aircraft = next;
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      // Never leave an old snapshot on screen as if it were live.
+      aircraft = [];
+      return false;
+    }
   }
 
   // ── ADS-B Exchange Military Feed ─────────────────────────
   async function fetchMilitary() {
+    if (!CONFIG.adsbExchangeKey) return 0;
     try {
       // ADS-B Exchange v2 API — military endpoint
       const url = 'https://adsbexchange.com/api/aircraft/v2/mil/';
-      const res = await fetch(CONFIG.proxy + encodeURIComponent(url), {
-        headers: { 'api-auth': CONFIG.adsbExchangeKey || '' },
+      // Do not forward an API key through an unrelated public CORS proxy.
+      const res = await fetch(url, {
+        headers: { 'api-auth': CONFIG.adsbExchangeKey },
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) throw new Error('ADS-B ' + res.status);
       const data = await res.json();
       const milAircraft = (data.ac || [])
-        .filter(a => a.lat != null && a.lon != null)
+        .filter(a => a.lat != null && a.lon != null && a.seen_pos != null &&
+          Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lon)) &&
+          Math.abs(Number(a.lat)) <= 90 && Math.abs(Number(a.lon)) <= 180 &&
+          Number.isFinite(Number(a.seen_pos)) && Number(a.seen_pos) >= 0 &&
+          Number(a.seen_pos) <= CONFIG.aircraftMaxAgeSeconds)
         .map(a => ({
           icao24: a.hex || '',
           callsign: (a.flight || a.r || '').trim(),
@@ -97,6 +115,8 @@ const Aircraft = (() => {
           squawk: a.squawk || '---',
           on_ground: a.alt_baro === 'ground',
           military: true,
+          classification: 'provider military feed',
+          time_position: Math.floor(Date.now() / 1000 - Number(a.seen_pos)),
           source: 'adsbx',
           aircraftType: a.t || '---',
           registration: a.r || '---',
@@ -111,7 +131,10 @@ const Aircraft = (() => {
         } else {
           // Upgrade existing entry to military=true
           const idx = aircraft.findIndex(a => a.icao24 === ma.icao24);
-          if (idx >= 0) aircraft[idx].military = true;
+          if (idx >= 0) {
+            aircraft[idx].military = true;
+            aircraft[idx].classification = 'provider military feed';
+          }
         }
       });
       return milAircraft.length;
@@ -126,10 +149,11 @@ const Aircraft = (() => {
     if (!callsign) return null;
     const cs = callsign.trim();
     if (routeCache[cs]) return routeCache[cs];
-    if (!CONFIG.aviationstack.apiKey) return null;
+    if (!CONFIG.aviationstack.apiKey || CONFIG.aviationstack.apiKey.startsWith('PASTE_')) return null;
     try {
-      const url = `${CONFIG.aviationstack.base}?access_key=${CONFIG.aviationstack.apiKey}&flight_iata=${cs}&limit=1`;
-      const res = await fetch(CONFIG.proxy + encodeURIComponent(url));
+      const url = `${CONFIG.aviationstack.base}?access_key=${encodeURIComponent(CONFIG.aviationstack.apiKey)}&flight_iata=${encodeURIComponent(cs)}&limit=1`;
+      // Optional browser key remains visible to site visitors; never send it to a public proxy.
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error('AviationStack ' + res.status);
       const data = await res.json();
       const flight = data.data && data.data[0];
@@ -215,6 +239,11 @@ const Aircraft = (() => {
 
   // ── Build Meshes ─────────────────────────────────────────
   function buildMeshes(godMode) {
+    airMeshes.forEach(mesh => mesh.material.dispose());
+    airLabels.forEach(label => {
+      label.material.map.dispose();
+      label.material.dispose();
+    });
     Globe.airGroup.clear();
     Globe.labelGroup.children
       .filter(c => c.userData.airLabel)
@@ -317,7 +346,7 @@ const Aircraft = (() => {
     get list()    { return aircraft; },
     get meshes()  { return airMeshes; },
     get labels()  { return airLabels; },
-    fetch: fetch_data, fetchMilitary, fetchRoute,
+    fetch: fetch_data, fetchMilitary, fetchRoute, freshPosition,
     buildMeshes, place, recolor, showBracket, isMilitary,
   };
 })();

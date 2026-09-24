@@ -46,7 +46,7 @@ const Radar = (() => {
 
   function scan() {
     blips = [];
-    if (!userLat || !userLon) return;
+    if (!locationGranted || userLat == null || userLon == null) return;
 
     // Deduplicate satellites by NORAD ID — same sat can appear in multiple TLE groups
     const seenIds = new Set();
@@ -73,7 +73,8 @@ const Radar = (() => {
     // Deduplicate aircraft by ICAO24
     const seenIcao = new Set();
     Aircraft.list.forEach((ac, idx) => {
-      if (ac.lat == null || ac.lon == null) return;
+      if (ac.lat == null || ac.lon == null ||
+          !Aircraft.freshPosition(ac.time_position)) return;
       const icaoKey = ac.icao24 || String(idx);
       if (seenIcao.has(icaoKey)) return;
       seenIcao.add(icaoKey);
@@ -242,11 +243,11 @@ const Radar = (() => {
       return `<div class="radar-blip-item${milClass}" data-type="${b.type}" data-idx="${b.idx}">
         <div class="rbi-top">
           <span class="rbi-icon">${b.icon}</span>
-          <span class="rbi-name">${b.name}</span>
+          <span class="rbi-name">${Utils.escapeHTML(b.name)}</span>
           <span class="rbi-dist">${distStr}</span>
         </div>
         <div class="rbi-bottom">
-          <span class="rbi-id">${b.id}</span>
+          <span class="rbi-id">${Utils.escapeHTML(b.id)}</span>
           <span class="rbi-alt">ALT:${altStr}</span>
           <span class="rbi-bear">BRG:${bearDeg}°</span>
         </div>

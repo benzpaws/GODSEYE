@@ -369,7 +369,7 @@ async function init() {
 
   if (result.fallback) {
     document.getElementById('lerr').style.display = 'block';
-    document.getElementById('lerr').textContent = 'CELESTRAK CORS RESTRICTED â USING BUILT-IN TLE DATASET';
+    document.getElementById('lerr').textContent = 'SATELLITE DATA UNAVAILABLE — POSITIONS NOT SHOWN';
   }
 
   Satellites.list = result.sats;
@@ -407,8 +407,8 @@ async function init() {
   }, 500);
 
   document.getElementById('scnt').textContent = Satellites.list.length + ' SAT';
-  document.getElementById('sstatus').textContent = 'ONLINE';
-  document.getElementById('sdot').style.boxShadow = '0 0 10px #00f5ff';
+  document.getElementById('sstatus').textContent = result.fallback ? 'OFFLINE' : 'PROPAGATED';
+  document.getElementById('sdot').style.boxShadow = result.fallback ? 'none' : '0 0 10px #00f5ff';
   document.getElementById('lupdate').textContent = 'SYNC: ' + new Date().toUTCString().slice(17, 25) + ' UTC';
 
   Satellites.fetchISSData();
@@ -454,12 +454,22 @@ function animate() {
 }
 
 // ââ AUTO-REFRESH âââââââââââââââââââââââââââââââââââââââââââ
-setInterval(() => {
-  if (Aircraft.list.length > 0) {
-    Aircraft.fetch().then(ok => {
-      if (ok) { Aircraft.buildMeshes(UI.godMode); Aircraft.place(); }
-    });
+setInterval(async () => {
+  const selectedIcao = UI.selectedType === 'air'
+    ? Aircraft.list[UI.selectedIdx]?.icao24 : null;
+  const ok = await Aircraft.fetch();
+  Aircraft.buildMeshes(UI.godMode);
+  Aircraft.place();
+  if (selectedIcao) {
+    const nextIdx = Aircraft.list.findIndex(a => a.icao24 === selectedIcao);
+    if (nextIdx < 0) UI.deselect();
+    else if (nextIdx !== UI.selectedIdx) UI.selectAir(nextIdx);
+    else UI.refreshSelectedAir();
   }
+  document.getElementById('acnt').textContent = ok ? Aircraft.list.length + ' ACFT' : 'ACFT OFFLINE';
+  document.getElementById('adot').style.boxShadow = ok ? '0 0 8px #00f5ff' : 'none';
+  UI.buildList();
+  UI.buildDataLayers();
 }, 60000);
 
 setInterval(tick, 1000);

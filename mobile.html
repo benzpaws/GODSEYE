@@ -197,7 +197,7 @@ const MobileRadar = (() => {
   let rangeKm = 50, typeFilter = 'all', colorFilter = 'all';
   let searchQuery = '';
   let selectedBlip = null;
-  let sweepAngle = 0, animFrame = null, lastScan = 0;
+  let sweepAngle = 0, animFrame = null, lastScan = 0, lastAircraftFetch = 0, aircraftFetching = false;
   let canvas, ctx;
 
   const EARTH_R = 6371;
@@ -379,12 +379,12 @@ const MobileRadar = (() => {
     });
 
     aircraft.forEach(a => {
-      if (a.lat == null) return;
+      if (a.lat == null || !freshAircraftPosition(a.time_position)) return;
       const cs = (a.callsign || 'UNKNOWN').trim();
       addBlip('air', cs, 'aircraft', a.lat, a.lon,
         a.baro_altitude || a.geo_altitude || 0,
         a.velocity, `ICAO-${a.icao24}`,
-        isMilitary(a), { icao24: a.icao24, origin: a.origin_country, heading: a.true_track, squawk: a.squawk, velocity: a.velocity });
+        isMilitary(a), { icao24: a.icao24, origin: a.origin_country, heading: a.true_track, squawk: a.squawk, velocity: a.velocity, time_position: a.time_position });
     });
 
     blips.sort((a, b) => (a.dist||999) - (b.dist||999));
@@ -435,13 +435,13 @@ const MobileRadar = (() => {
       const alt  = b.alt ? (b.type==='air' ? Math.round(b.alt)+'m' : b.alt.toFixed(0)+'km') : '---';
       const brg  = b.bearing != null ? Math.round(b.bearing*180/Math.PI)+'°' : '---';
       const col  = blipColor(b);
-      const milTag = b.military ? '<span class="mil-tag">🪖 MIL</span>' : '';
+      const milTag = b.military ? '<span class="mil-tag">🪖 POSSIBLE MIL</span>' : '';
       const icon = b.cat==='iss' ? '🛰️' : b.type==='air' ? (b.military?'🪖':'✈️') : (CONFIG.catMeta[b.cat]?.icon||'🛰️');
       return `<div class="contact${isSel?' sel':''}${b.military?' mil':''}" data-idx="${i}" onclick="MobileRadar.selectBlip(${i})">
         <div class="c-icon" style="filter:drop-shadow(0 0 4px ${col})">${icon}</div>
         <div class="c-body">
-          <div class="c-name" style="color:${col}">${b.name}${milTag}</div>
-          <div class="c-sub">${b.id} · ALT:${alt} · BRG:${brg}</div>
+          <div class="c-name" style="color:${col}">${Utils.escapeHTML(b.name)}${milTag}</div>
+          <div class="c-sub">${Utils.escapeHTML(b.id)} · ALT:${alt} · BRG:${brg}</div>
         </div>
         <div class="c-dist" style="color:${b.dist!=null?col:'rgba(0,245,255,.3)'}">${dist}</div>
       </div>`;
@@ -461,7 +461,7 @@ const MobileRadar = (() => {
     selectedBlip = b;
     const col = blipColor(b);
     const icon = b.cat==='iss'?'🛰️':b.type==='air'?(b.military?'🪖':'✈️'):(CONFIG.catMeta[b.cat]?.icon||'🛰️');
-    document.getElementById('detail-name').innerHTML = `${icon} <span style="color:${col}">${b.name}</span>${b.military?'<span class="mil-tag" style="margin-left:8px">🪖 MILITARY</span>':''}`;
+    document.getElementById('detail-name').innerHTML = `${icon} <span style="color:${col}">${Utils.escapeHTML(b.name)}</span>${b.military?'<span class="mil-tag" style="margin-left:8px">🪖 POSSIBLE MILITARY</span>':''}`;
     document.getElementById('detail-class').textContent = b.type==='sat' ? 'UNCLASSIFIED // PUBLIC DATA // CELESTRAK' : 'UNCLASSIFIED // OPENSKY NETWORK';
 
     const dist  = b.dist != null ? (b.dist<1?(b.dist*1000).toFixed(0)+'m':b.dist.toFixed(2)+'km') : '---';
@@ -504,13 +504,14 @@ const MobileRadar = (() => {
       html += `
       <div class="d-row"><span class="d-label">FLIGHT LEVEL</span><span class="d-val">${fl}</span></div>
       <div class="d-row"><span class="d-label">HEADING</span><span class="d-val">${b.heading?b.heading.toFixed(0)+'°':'---'}</span></div>
-      <div class="d-row"><span class="d-label">SQUAWK</span><span class="d-val ${b.squawk==='7700'||b.squawk==='7500'?'amb':''}">${b.squawk||'---'}</span></div>
+      <div class="d-row"><span class="d-label">SQUAWK</span><span class="d-val ${b.squawk==='7700'||b.squawk==='7500'?'amb':''}">${Utils.escapeHTML(b.squawk||'---')}</span></div>
     </div>
     <div class="d-section">
       <div class="d-section-title">// IDENTIFICATION</div>
-      <div class="d-row"><span class="d-label">ICAO24</span><span class="d-val">${b.icao24||'---'}</span></div>
-      <div class="d-row"><span class="d-label">COUNTRY</span><span class="d-val">${b.origin||'---'}</span></div>
-      <div class="d-row"><span class="d-label">MILITARY</span><span class="d-val" style="color:${b.military?'#ff9900':'#00d4ff'}">${b.military?'YES — FLAGGED':'NO'}</span></div>
+      <div class="d-row"><span class="d-label">ICAO24</span><span class="d-val">${Utils.escapeHTML(b.icao24||'---')}</span></div>
+      <div class="d-row"><span class="d-label">COUNTRY</span><span class="d-val">${Utils.escapeHTML(b.origin||'---')}</span></div>
+      <div class="d-row"><span class="d-label">CLASSIFICATION</span><span class="d-val" style="color:${b.military?'#ff9900':'#00d4ff'}">${b.military?'POSSIBLE · CALLSIGN HINT':'UNVERIFIED'}</span></div>
+      <div class="d-row"><span class="d-label">OBSERVED (UTC)</span><span class="d-val">${b.time_position ? new Date(b.time_position * 1000).toISOString().slice(0, 19).replace('T', ' ') : '---'}</span></div>
     </div>`;
     }
 
@@ -561,26 +562,43 @@ const MobileRadar = (() => {
           .catch(() => [])
       ));
       results.forEach(r => { if (r.status === 'fulfilled') satellites = satellites.concat(r.value); });
-      if (satellites.length < 5) satellites = parseTLEs(CONFIG.fallbackTLE, 'other');
+      if (satellites.length < 5) satellites = [];
     } catch (e) {
-      satellites = parseTLEs(CONFIG.fallbackTLE, 'other');
+      satellites = [];
     }
     propagateSats();
     updateStatus('LOADING AIRCRAFT...');
-    try {
-      const res = await fetch(CONFIG.opensky);
-      if (res.ok) {
-        const data = await res.json();
-        aircraft = (data.states||[]).filter(s=>s[6]!=null&&s[5]!=null).slice(0,500).map(s=>({
-          icao24:s[0],callsign:(s[1]||'').trim(),origin_country:s[2],
-          lon:s[5],lat:s[6],baro_altitude:s[7],geo_altitude:s[13],
-          velocity:s[9],true_track:s[10],squawk:s[14],
-        }));
-      }
-    } catch (e) {}
+    await fetchAircraft();
     scan();
     startLoop();
     updateStatus(locationGranted ? 'SCANNING' : 'OFFLINE — GPS NEEDED');
+  }
+
+  function freshAircraftPosition(timestamp) {
+    const now = Date.now() / 1000;
+    return Number.isFinite(timestamp) && timestamp > 0 &&
+      timestamp <= now + 30 && now - timestamp <= CONFIG.aircraftMaxAgeSeconds;
+  }
+
+  async function fetchAircraft() {
+    if (aircraftFetching) return;
+    aircraftFetching = true;
+    lastAircraftFetch = Date.now();
+    try {
+      const res = await fetch(CONFIG.proxy + encodeURIComponent(CONFIG.opensky),
+        { signal: AbortSignal.timeout(12000) });
+      if (!res.ok) throw new Error('OpenSky ' + res.status);
+      const data = await res.json();
+      if (!Array.isArray(data.states)) throw new Error('Invalid OpenSky response');
+      aircraft = data.states.filter(s => Array.isArray(s) && Number.isFinite(s[5]) &&
+        Number.isFinite(s[6]) && Math.abs(s[5]) <= 180 && Math.abs(s[6]) <= 90 &&
+        freshAircraftPosition(s[3])).slice(0, 500).map(s => ({
+          icao24:s[0],callsign:(s[1]||'').trim(),origin_country:s[2],
+          lon:s[5],lat:s[6],baro_altitude:s[7],geo_altitude:s[13],
+          velocity:s[9],true_track:s[10],squawk:s[14],time_position:s[3],
+        }));
+    } catch (e) { aircraft = []; }
+    finally { aircraftFetching = false; scan(); }
   }
 
   function parseTLEs(raw, cat) {
@@ -649,6 +667,7 @@ const MobileRadar = (() => {
   // ── Clock ──────────────────────────────────────────────
   function tick() {
     document.getElementById('utc').textContent = Utils.formatUTC();
+    if (lastAircraftFetch && Date.now() - lastAircraftFetch > 60000) fetchAircraft();
     // Re-propagate every 30s
     if (Date.now() - lastScan > 30000) {
       propagateSats(); scan();

@@ -4,6 +4,11 @@
 // ═══════════════════════════════════════════════════════════
 
 const Utils = {
+  escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+  },
   ll2v3(lat, lon, r) {
     const phi = (90 - lat) * Math.PI / 180;
     const theta = (lon + 180) * Math.PI / 180;
